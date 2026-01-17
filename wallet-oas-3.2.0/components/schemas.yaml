@@ -804,7 +804,7 @@ AddressValidationRequest:
       description: Optional memo/tag for networks that require it.
     metadata:
       $ref: '#/JsonObject'
-      description: Extensible validation hints (e.g., "address_type": "contract").
+      description: 'Extensible validation hints (e.g., "address_type": "contract").'
 
 AddressValidationBase:
   type: object
