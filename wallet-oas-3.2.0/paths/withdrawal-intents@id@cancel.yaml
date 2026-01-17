@@ -1,0 +1,42 @@
+post:
+  tags: [Withdrawals]
+  operationId: cancelWithdrawalIntent
+  summary: Cancel a WithdrawalIntent (PENDING only)
+  description: |
+    Cancels a withdrawal only if it is still PENDING (not assigned to a batch).
+    Reserved funds are released.
+  security:
+    - bearerAuth: []
+  parameters:
+    - $ref: ../components/parameters.yaml#/WithdrawalIntentId
+  requestBody:
+    required: false
+    content:
+      application/json:
+        schema:
+          $ref: ../components/schemas.yaml#/EmptyObject
+  responses:
+    '200':
+      description: Cancellation result
+      content:
+        application/json:
+          schema:
+            $ref: ../components/schemas.yaml#/WithdrawalIntentResponse
+    '401':
+      description: Unauthorized
+      content:
+        application/json:
+          schema:
+            $ref: ../components/schemas.yaml#/ApiError
+    '404':
+      description: Not found
+      content:
+        application/json:
+          schema:
+            $ref: ../components/schemas.yaml#/ApiError
+    '409':
+      description: Cannot cancel (not in PENDING)
+      content:
+        application/json:
+          schema:
+            $ref: ../components/schemas.yaml#/ApiError

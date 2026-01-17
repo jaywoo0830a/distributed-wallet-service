@@ -1,0 +1,35 @@
+post:
+  tags: [Deposits]
+  operationId: refreshDepositIntent
+  summary: Refresh deposit observation (optional)
+  description: |
+    Queues an asynchronous observation job. Safe to call multiple times.
+  security:
+    - bearerAuth: []
+  parameters:
+    - $ref: ../components/parameters.yaml#/DepositIntentId
+  requestBody:
+    required: false
+    content:
+      application/json:
+        schema:
+          $ref: ../components/schemas.yaml#/EmptyObject
+  responses:
+    '202':
+      description: Observation refresh queued
+      content:
+        application/json:
+          schema:
+            $ref: ../components/schemas.yaml#/DepositRefreshResponse
+    '401':
+      description: Unauthorized
+      content:
+        application/json:
+          schema:
+            $ref: ../components/schemas.yaml#/ApiError
+    '404':
+      description: Not found
+      content:
+        application/json:
+          schema:
+            $ref: ../components/schemas.yaml#/ApiError

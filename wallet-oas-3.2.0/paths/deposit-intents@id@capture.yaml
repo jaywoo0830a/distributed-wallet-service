@@ -1,0 +1,54 @@
+post:
+  tags: [Deposits]
+  operationId: captureDepositIntent
+  summary: Capture (finalize) a DepositIntent (critical section)
+  description: |
+    Finalizes the deposit exactly once.
+    This endpoint is idempotent and concurrency-safe.
+
+    Upstream systems must only proceed after CAPTURED.
+
+    Idempotency:
+    - This request has its own idempotency_key (separate from intent creation).
+    - Replays return the original CAPTURED resource.
+  security:
+    - bearerAuth: []
+  parameters:
+    - $ref: ../components/parameters.yaml#/DepositIntentId
+  requestBody:
+    required: true
+    content:
+      application/json:
+        schema:
+          $ref: ../components/schemas.yaml#/CaptureDepositIntentRequest
+  responses:
+    '200':
+      description: Capture result (first capture or replay)
+      content:
+        application/json:
+          schema:
+            $ref: ../components/schemas.yaml#/DepositIntentResponse
+    '400':
+      description: Invalid request (e.g. bad format)
+      content:
+        application/json:
+          schema:
+            $ref: ../components/schemas.yaml#/ApiError
+    '401':
+      description: Unauthorized
+      content:
+        application/json:
+          schema:
+            $ref: ../components/schemas.yaml#/ApiError
+    '404':
+      description: Not found
+      content:
+        application/json:
+          schema:
+            $ref: ../components/schemas.yaml#/ApiError
+    '409':
+      description: Capture conflict (e.g. incompatible replay)
+      content:
+        application/json:
+          schema:
+            $ref: ../components/schemas.yaml#/ApiError

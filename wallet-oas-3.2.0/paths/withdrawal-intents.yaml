@@ -1,0 +1,54 @@
+post:
+  tags: [Withdrawals]
+  operationId: createWithdrawalIntent
+  summary: Create a WithdrawalIntent (reserve funds)
+  description: |
+    Creates a new withdrawal intent and reserves user funds atomically.
+    Actual wallet transfer happens asynchronously (usually via internal batching).
+
+    Authentication:
+    - The user identity is derived from the auth context (bearer token).
+    - Do NOT pass user_id in the request body for security reasons.
+
+    Idempotency:
+    - reference.idempotency_key prevents duplicate creations.
+    - If the same idempotency key is reused with a different payload, the server must reject with 409.
+  security:
+    - bearerAuth: []
+  requestBody:
+    required: true
+    content:
+      application/json:
+        schema:
+          $ref: ../components/schemas.yaml#/CreateWithdrawalIntentRequest
+  responses:
+    '201':
+      description: WithdrawalIntent created and funds reserved
+      content:
+        application/json:
+          schema:
+            $ref: ../components/schemas.yaml#/WithdrawalIntentResponse
+    '400':
+      description: Invalid request
+      content:
+        application/json:
+          schema:
+            $ref: ../components/schemas.yaml#/ApiError
+    '401':
+      description: Unauthorized
+      content:
+        application/json:
+          schema:
+            $ref: ../components/schemas.yaml#/ApiError
+    '402':
+      description: Insufficient balance / funds not reservable
+      content:
+        application/json:
+          schema:
+            $ref: ../components/schemas.yaml#/ApiError
+    '409':
+      description: Idempotency conflict (same key, different payload)
+      content:
+        application/json:
+          schema:
+            $ref: ../components/schemas.yaml#/ApiError

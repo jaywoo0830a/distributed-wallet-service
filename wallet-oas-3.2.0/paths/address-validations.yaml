@@ -1,0 +1,39 @@
+post:
+  tags: [Utilities]
+  operationId: validateAddress
+  summary: Validate a destination address on a given network
+  description: |
+    Validates whether a provided address is syntactically and network-valid
+    (best-effort), without broadcasting or creating any on-chain state.
+
+    Notes:
+    - Some networks require additional fields (e.g. memo/tag); allow metadata for extensibility.
+    - This endpoint is safe to call frequently.
+    - If validation depends on upstream RPC and it's unavailable, status becomes UNKNOWN/UNAVAILABLE with failure.
+  security:
+    - bearerAuth: []
+  requestBody:
+    required: true
+    content:
+      application/json:
+        schema:
+          $ref: ../components/schemas.yaml#/AddressValidationRequest
+  responses:
+    '200':
+      description: Address validation result
+      content:
+        application/json:
+          schema:
+            $ref: ../components/schemas.yaml#/AddressValidationResponse
+    '400':
+      description: Invalid request (bad format)
+      content:
+        application/json:
+          schema:
+            $ref: ../components/schemas.yaml#/ApiError
+    '401':
+      description: Unauthorized
+      content:
+        application/json:
+          schema:
+            $ref: ../components/schemas.yaml#/ApiError

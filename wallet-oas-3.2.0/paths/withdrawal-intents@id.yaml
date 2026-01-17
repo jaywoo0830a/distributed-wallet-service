@@ -1,0 +1,27 @@
+get:
+  tags: [Withdrawals]
+  operationId: getWithdrawalIntent
+  summary: Get a WithdrawalIntent (polling)
+  security:
+    - bearerAuth: []
+  parameters:
+    - $ref: ../components/parameters.yaml#/WithdrawalIntentId
+  responses:
+    '200':
+      description: WithdrawalIntent
+      content:
+        application/json:
+          schema:
+            $ref: ../components/schemas.yaml#/WithdrawalIntentResponse
+    '401':
+      description: Unauthorized
+      content:
+        application/json:
+          schema:
+            $ref: ../components/schemas.yaml#/ApiError
+    '404':
+      description: Not found
+      content:
+        application/json:
+          schema:
+            $ref: ../components/schemas.yaml#/ApiError

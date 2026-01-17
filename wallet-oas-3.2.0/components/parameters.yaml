@@ -1,0 +1,15 @@
+DepositIntentId:
+  name: id
+  in: path
+  required: true
+  schema:
+    type: string
+  description: DepositIntent identifier
+
+WithdrawalIntentId:
+  name: id
+  in: path
+  required: true
+  schema:
+    type: string
+  description: WithdrawalIntent identifier

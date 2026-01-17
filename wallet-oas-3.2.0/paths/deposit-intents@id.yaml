@@ -1,0 +1,27 @@
+get:
+  tags: [Deposits]
+  operationId: getDepositIntent
+  summary: Get a DepositIntent (polling)
+  security:
+    - bearerAuth: []
+  parameters:
+    - $ref: ../components/parameters.yaml#/DepositIntentId
+  responses:
+    '200':
+      description: DepositIntent
+      content:
+        application/json:
+          schema:
+            $ref: ../components/schemas.yaml#/DepositIntentResponse
+    '401':
+      description: Unauthorized
+      content:
+        application/json:
+          schema:
+            $ref: ../components/schemas.yaml#/ApiError
+    '404':
+      description: Not found
+      content:
+        application/json:
+          schema:
+            $ref: ../components/schemas.yaml#/ApiError

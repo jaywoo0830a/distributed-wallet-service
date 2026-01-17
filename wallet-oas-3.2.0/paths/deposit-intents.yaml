@@ -1,0 +1,44 @@
+post:
+  tags: [Deposits]
+  operationId: createDepositIntent
+  summary: Create a DepositIntent
+  description: |
+    Creates a new deposit intent. Address provisioning happens asynchronously.
+    Clients should poll the created resource for address and progress updates.
+
+    Idempotency:
+    - reference.idempotency_key prevents duplicate creations.
+    - If the same idempotency key is reused with a different payload, the server must reject with 409.
+  security:
+    - bearerAuth: []
+  requestBody:
+    required: true
+    content:
+      application/json:
+        schema:
+          $ref: ../components/schemas.yaml#/CreateDepositIntentRequest
+  responses:
+    '201':
+      description: DepositIntent created
+      content:
+        application/json:
+          schema:
+            $ref: ../components/schemas.yaml#/DepositIntentResponse
+    '400':
+      description: Invalid request
+      content:
+        application/json:
+          schema:
+            $ref: ../components/schemas.yaml#/ApiError
+    '401':
+      description: Unauthorized
+      content:
+        application/json:
+          schema:
+            $ref: ../components/schemas.yaml#/ApiError
+    '409':
+      description: Idempotency conflict (same key, different payload)
+      content:
+        application/json:
+          schema:
+            $ref: ../components/schemas.yaml#/ApiError

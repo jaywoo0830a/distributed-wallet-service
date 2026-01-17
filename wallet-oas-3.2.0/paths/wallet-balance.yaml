@@ -1,0 +1,57 @@
+get:
+  tags: [Utilities]
+  operationId: getWalletBalance
+  summary: Get hot-wallet spendable balance snapshot (polling)
+  description: |
+    Returns a snapshot of the service hot-wallet balance for a given asset/network.
+
+    Use cases:
+    - Pre-flight check before sending a withdrawal batch
+    - Monitoring and alerting (insufficient funds, RPC outage)
+    - UI dashboards (read-only)
+
+    Notes:
+    - This is service-level balance (not user balance).
+    - Errors are returned as a typed resource state (UNAVAILABLE/FAILED), not transport errors.
+    - The response may be slightly stale; see observed_at and staleness_ms.
+  security:
+    - bearerAuth: []
+  parameters:
+    - name: asset
+      in: query
+      required: true
+      schema:
+        $ref: ../components/schemas.yaml#/Asset
+    - name: network
+      in: query
+      required: true
+      schema:
+        $ref: ../components/schemas.yaml#/Network
+    - name: min_required_amount
+      in: query
+      required: false
+      schema:
+        $ref: ../components/schemas.yaml#/AmountString
+      description: |
+        Optional preflight amount check. If provided, the server can evaluate
+        whether spendable >= (min_required_amount + estimated_fee + buffer).
+    - name: include_fee_estimate
+      in: query
+      required: false
+      schema:
+        type: boolean
+        default: true
+      description: Whether to include estimated fee fields (best-effort).
+  responses:
+    '200':
+      description: Wallet balance snapshot (OK or typed non-OK state)
+      content:
+        application/json:
+          schema:
+            $ref: ../components/schemas.yaml#/WalletBalanceResponse
+    '401':
+      description: Unauthorized
+      content:
+        application/json:
+          schema:
+            $ref: ../components/schemas.yaml#/ApiError

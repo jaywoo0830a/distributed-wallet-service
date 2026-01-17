@@ -1,0 +1,72 @@
+openapi: 3.2.0
+$self: https://api.example.com/openapi/wallet.yaml
+jsonSchemaDialect: https://spec.openapis.org/oas/3.1/dialect/base
+info:
+  title: Wallet API
+  version: 1.1.0
+  description: |
+    Polling-based, concurrency-safe, idempotent Wallet API supporting deposits and withdrawals.
+
+    Key principles:
+    - Clients poll resources via GET (no webhooks).
+    - Internals are asynchronous.
+    - Critical actions are explicit and at-most-once:
+      - Deposit capture: exactly once per DepositIntent.
+      - Withdrawal sending: at-most-once per WithdrawalIntent via internal batching.
+    - Errors are expressed as resource state (failure object), not transport errors.
+    - Response schemas are strongly typed by status using oneOf + discriminator to prevent client mistakes.
+
+servers:
+  - name: prod
+    url: https://api.example.com
+    description: Production (example)
+  - name: sandbox
+    url: https://sandbox.example.com
+    description: Sandbox (example)
+
+tags:
+  - name: Deposits
+    summary: Deposits
+    description: Deposit intent lifecycle (address provisioning, observation, capture)
+    kind: nav
+  - name: Withdrawals
+    summary: Withdrawals
+    description: Withdrawal intent lifecycle (reserve, batching, sending, cancel)
+    kind: nav
+  - name: Utilities
+    summary: Utilities
+    description: Helper endpoints (wallet balance snapshot, address validation)
+    kind: nav
+
+security:
+  - bearerAuth: []
+
+paths:
+  /v1/deposit-intents:
+    $ref: ./paths/deposit-intents.yaml
+  /v1/deposit-intents/{id}:
+    $ref: ./paths/deposit-intents@id.yaml
+  /v1/deposit-intents/{id}/refresh:
+    $ref: ./paths/deposit-intents@id@refresh.yaml
+  /v1/deposit-intents/{id}/capture:
+    $ref: ./paths/deposit-intents@id@capture.yaml
+
+  /v1/withdrawal-intents:
+    $ref: ./paths/withdrawal-intents.yaml
+  /v1/withdrawal-intents/{id}:
+    $ref: ./paths/withdrawal-intents@id.yaml
+  /v1/withdrawal-intents/{id}/cancel:
+    $ref: ./paths/withdrawal-intents@id@cancel.yaml
+
+  /v1/wallet-balance:
+    $ref: ./paths/wallet-balance.yaml
+  /v1/address-validations:
+    $ref: ./paths/address-validations.yaml
+
+components:
+  securitySchemes:
+    $ref: ./components/securitySchemes.yaml
+  parameters:
+    $ref: ./components/parameters.yaml
+  schemas:
+    $ref: ./components/schemas.yaml

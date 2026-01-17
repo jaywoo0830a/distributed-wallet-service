@@ -1,0 +1,908 @@
+EmptyObject:
+  type: object
+  additionalProperties: false
+  description: An empty JSON object.
+
+JsonObject:
+  type: object
+  additionalProperties: true
+  description: Arbitrary JSON object.
+
+Reference:
+  type: object
+  additionalProperties: false
+  required: [idempotency_key]
+  properties:
+    idempotency_key:
+      type: string
+      minLength: 1
+      description: |
+        Idempotency key for safely retrying requests.
+        Reusing the same key with a different payload must yield 409.
+    external_ids:
+      $ref: '#/JsonObject'
+  description: Opaque integration references.
+
+Failure:
+  type: object
+  additionalProperties: false
+  required: [code, message, retryable]
+  properties:
+    code:
+      type: string
+      description: Machine-readable failure code.
+    message:
+      type: string
+      description: Human-readable failure message.
+    retryable:
+      type: boolean
+      description: Whether retrying later could succeed.
+    last_error_at:
+      type: string
+      format: date-time
+      description: Timestamp of the last error occurrence (if applicable).
+
+ApiError:
+  type: object
+  additionalProperties: false
+  required: [code, message]
+  properties:
+    code:
+      type: string
+    message:
+      type: string
+    details:
+      type: array
+      items:
+        type: object
+        additionalProperties: true
+
+AmountString:
+  type: string
+  pattern: '^[0-9]+(\.[0-9]+)?$'
+  description: Decimal amount as a string (e.g., "0.015", "152.34").
+
+Asset:
+  type: string
+  description: Asset symbol or identifier (implementation-defined).
+  example: USDT
+
+Network:
+  type: string
+  description: Network identifier (implementation-defined).
+  example: TRON
+
+Address:
+  type: string
+  minLength: 1
+  description: Blockchain address string.
+
+DepositPolicy:
+  type: object
+  additionalProperties: false
+  properties:
+    min_confirmations:
+      type: integer
+      minimum: 0
+      default: 0
+    allow_overpay:
+      type: boolean
+      default: true
+    allow_underpay:
+      type: boolean
+      default: false
+  description: Deposit acceptance policy.
+
+Eligibility:
+  type: object
+  additionalProperties: false
+  required: [is_eligible, reasons]
+  properties:
+    is_eligible:
+      type: boolean
+    reasons:
+      type: array
+      items:
+        type: string
+      description: Reasons when not eligible (implementation-defined codes).
+
+DepositCaptureInfo:
+  type: object
+  additionalProperties: false
+  required: [capture_id, captured_at]
+  properties:
+    capture_id:
+      type: string
+    captured_at:
+      type: string
+      format: date-time
+
+DepositIntentStatus:
+  type: string
+  enum:
+    - CREATED
+    - ADDRESS_PENDING
+    - AWAITING_DEPOSIT
+    - OBSERVED
+    - ELIGIBLE
+    - CAPTURE_PENDING
+    - CAPTURED
+    - EXPIRED
+    - CANCELLED
+    - FAILED
+
+WithdrawalIntentStatus:
+  type: string
+  enum:
+    - PENDING
+    - LOCKED
+    - SENDING
+    - SENT
+    - CONFIRMED
+    - FAILED
+    - CANCELLED
+
+WithdrawalBatchStatus:
+  type: string
+  enum:
+    - CREATED
+    - SENDING
+    - SENT
+    - UNKNOWN
+    - FAILED
+
+TxInfo:
+  type: object
+  additionalProperties: false
+  required: [txid]
+  properties:
+    txid:
+      type: string
+    sent_at:
+      type: string
+      format: date-time
+
+DebugBatchInfo:
+  type: object
+  additionalProperties: false
+  properties:
+    batch_id:
+      oneOf:
+        - type: string
+        - type: "null"
+      description: Debug-only batch identifier (optional).
+    batch_status:
+      $ref: '#/WithdrawalBatchStatus'
+  description: Optional debug information about internal batching.
+
+# -------------------------
+# Requests
+# -------------------------
+
+CreateDepositIntentRequest:
+  type: object
+  additionalProperties: false
+  required:
+    - asset
+    - network
+    - expected_amount
+    - expires_at
+    - reference
+  properties:
+    asset:
+      $ref: '#/Asset'
+    network:
+      $ref: '#/Network'
+    expected_amount:
+      $ref: '#/AmountString'
+    expires_at:
+      type: string
+      format: date-time
+    policy:
+      $ref: '#/DepositPolicy'
+    reference:
+      $ref: '#/Reference'
+    metadata:
+      $ref: '#/JsonObject'
+
+CaptureDepositIntentRequest:
+  type: object
+  additionalProperties: false
+  required: [idempotency_key, expected_amount]
+  properties:
+    idempotency_key:
+      type: string
+      minLength: 1
+      description: Idempotency key for the capture request.
+    expected_amount:
+      $ref: '#/AmountString'
+
+CreateWithdrawalIntentRequest:
+  type: object
+  additionalProperties: false
+  required:
+    - asset
+    - network
+    - amount
+    - to_address
+    - reference
+  properties:
+    asset:
+      $ref: '#/Asset'
+    network:
+      $ref: '#/Network'
+    amount:
+      $ref: '#/AmountString'
+    to_address:
+      $ref: '#/Address'
+    reference:
+      $ref: '#/Reference'
+    metadata:
+      $ref: '#/JsonObject'
+
+# -------------------------
+# DepositIntent: base + status-specific variants
+# -------------------------
+
+DepositIntentBase:
+  type: object
+  additionalProperties: false
+  required:
+    - id
+    - asset
+    - network
+    - expected_amount
+    - received_amount
+    - expires_at
+    - reference
+    - metadata
+    - poll_after_ms
+  properties:
+    id:
+      type: string
+    asset:
+      $ref: '#/Asset'
+    network:
+      $ref: '#/Network'
+    expected_amount:
+      $ref: '#/AmountString'
+    received_amount:
+      $ref: '#/AmountString'
+    min_confirmations:
+      type: integer
+      minimum: 0
+      description: Effective required confirmations (policy-applied).
+    current_confirmations:
+      type: integer
+      minimum: 0
+    expires_at:
+      type: string
+      format: date-time
+    reference:
+      $ref: '#/Reference'
+    metadata:
+      $ref: '#/JsonObject'
+    poll_after_ms:
+      type: integer
+      minimum: 0
+      description: Server-suggested polling delay.
+
+DepositIntentCreated:
+  allOf:
+    - $ref: '#/DepositIntentBase'
+    - type: object
+      required: [status, address]
+      properties:
+        status:
+          type: string
+          enum: [CREATED]
+        address:
+          type: "null"
+        eligibility:
+          type: "null"
+        capture:
+          type: "null"
+        failure:
+          type: "null"
+
+DepositIntentAddressPending:
+  allOf:
+    - $ref: '#/DepositIntentBase'
+    - type: object
+      required: [status, address]
+      properties:
+        status:
+          type: string
+          enum: [ADDRESS_PENDING]
+        address:
+          type: "null"
+        eligibility:
+          type: "null"
+        capture:
+          type: "null"
+        failure:
+          type: "null"
+
+DepositIntentAwaitingDeposit:
+  allOf:
+    - $ref: '#/DepositIntentBase'
+    - type: object
+      required: [status, address]
+      properties:
+        status:
+          type: string
+          enum: [AWAITING_DEPOSIT]
+        address:
+          $ref: '#/Address'
+        eligibility:
+          $ref: '#/Eligibility'
+        capture:
+          type: "null"
+        failure:
+          type: "null"
+
+DepositIntentObserved:
+  allOf:
+    - $ref: '#/DepositIntentBase'
+    - type: object
+      required: [status, address, eligibility]
+      properties:
+        status:
+          type: string
+          enum: [OBSERVED]
+        address:
+          $ref: '#/Address'
+        eligibility:
+          $ref: '#/Eligibility'
+        capture:
+          type: "null"
+        failure:
+          type: "null"
+
+DepositIntentEligible:
+  allOf:
+    - $ref: '#/DepositIntentBase'
+    - type: object
+      required: [status, address, eligibility]
+      properties:
+        status:
+          type: string
+          enum: [ELIGIBLE]
+        address:
+          $ref: '#/Address'
+        eligibility:
+          $ref: '#/Eligibility'
+        capture:
+          type: "null"
+        failure:
+          type: "null"
+
+DepositIntentCapturePending:
+  allOf:
+    - $ref: '#/DepositIntentBase'
+    - type: object
+      required: [status, address, eligibility]
+      properties:
+        status:
+          type: string
+          enum: [CAPTURE_PENDING]
+        address:
+          $ref: '#/Address'
+        eligibility:
+          $ref: '#/Eligibility'
+        capture:
+          type: "null"
+        failure:
+          type: "null"
+
+DepositIntentCaptured:
+  allOf:
+    - $ref: '#/DepositIntentBase'
+    - type: object
+      required: [status, address, capture]
+      properties:
+        status:
+          type: string
+          enum: [CAPTURED]
+        address:
+          $ref: '#/Address'
+        eligibility:
+          $ref: '#/Eligibility'
+        capture:
+          $ref: '#/DepositCaptureInfo'
+        failure:
+          type: "null"
+
+DepositIntentExpired:
+  allOf:
+    - $ref: '#/DepositIntentBase'
+    - type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [EXPIRED]
+        address:
+          oneOf:
+            - $ref: '#/Address'
+            - type: "null"
+        eligibility:
+          $ref: '#/Eligibility'
+        capture:
+          type: "null"
+        failure:
+          type: "null"
+
+DepositIntentCancelled:
+  allOf:
+    - $ref: '#/DepositIntentBase'
+    - type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [CANCELLED]
+        address:
+          oneOf:
+            - $ref: '#/Address'
+            - type: "null"
+        eligibility:
+          $ref: '#/Eligibility'
+        capture:
+          type: "null"
+        failure:
+          type: "null"
+
+DepositIntentFailed:
+  allOf:
+    - $ref: '#/DepositIntentBase'
+    - type: object
+      required: [status, failure]
+      properties:
+        status:
+          type: string
+          enum: [FAILED]
+        address:
+          oneOf:
+            - $ref: '#/Address'
+            - type: "null"
+        eligibility:
+          $ref: '#/Eligibility'
+        capture:
+          type: "null"
+        failure:
+          $ref: '#/Failure'
+
+DepositIntentResponse:
+  oneOf:
+    - $ref: '#/DepositIntentCreated'
+    - $ref: '#/DepositIntentAddressPending'
+    - $ref: '#/DepositIntentAwaitingDeposit'
+    - $ref: '#/DepositIntentObserved'
+    - $ref: '#/DepositIntentEligible'
+    - $ref: '#/DepositIntentCapturePending'
+    - $ref: '#/DepositIntentCaptured'
+    - $ref: '#/DepositIntentExpired'
+    - $ref: '#/DepositIntentCancelled'
+    - $ref: '#/DepositIntentFailed'
+  discriminator:
+    propertyName: status
+    mapping:
+      CREATED: '#/DepositIntentCreated'
+      ADDRESS_PENDING: '#/DepositIntentAddressPending'
+      AWAITING_DEPOSIT: '#/DepositIntentAwaitingDeposit'
+      OBSERVED: '#/DepositIntentObserved'
+      ELIGIBLE: '#/DepositIntentEligible'
+      CAPTURE_PENDING: '#/DepositIntentCapturePending'
+      CAPTURED: '#/DepositIntentCaptured'
+      EXPIRED: '#/DepositIntentExpired'
+      CANCELLED: '#/DepositIntentCancelled'
+      FAILED: '#/DepositIntentFailed'
+
+DepositRefreshResponse:
+  type: object
+  additionalProperties: false
+  required: [id, queued, status, poll_after_ms]
+  properties:
+    id:
+      type: string
+    queued:
+      type: boolean
+    status:
+      $ref: '#/DepositIntentStatus'
+    poll_after_ms:
+      type: integer
+      minimum: 0
+
+# -------------------------
+# WithdrawalIntent: base + status-specific variants
+# -------------------------
+
+WithdrawalIntentBase:
+  type: object
+  additionalProperties: false
+  required:
+    - id
+    - asset
+    - network
+    - amount
+    - to_address
+    - reference
+    - metadata
+    - poll_after_ms
+  properties:
+    id:
+      type: string
+    asset:
+      $ref: '#/Asset'
+    network:
+      $ref: '#/Network'
+    amount:
+      $ref: '#/AmountString'
+    to_address:
+      $ref: '#/Address'
+    reference:
+      $ref: '#/Reference'
+    metadata:
+      $ref: '#/JsonObject'
+    poll_after_ms:
+      type: integer
+      minimum: 0
+      description: Server-suggested polling delay.
+    debug:
+      $ref: '#/DebugBatchInfo'
+
+WithdrawalIntentPending:
+  allOf:
+    - $ref: '#/WithdrawalIntentBase'
+    - type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [PENDING]
+        tx:
+          type: "null"
+        failure:
+          type: "null"
+
+WithdrawalIntentLocked:
+  allOf:
+    - $ref: '#/WithdrawalIntentBase'
+    - type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [LOCKED]
+        tx:
+          type: "null"
+        failure:
+          type: "null"
+
+WithdrawalIntentSending:
+  allOf:
+    - $ref: '#/WithdrawalIntentBase'
+    - type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [SENDING]
+        tx:
+          type: "null"
+        failure:
+          type: "null"
+
+WithdrawalIntentSent:
+  allOf:
+    - $ref: '#/WithdrawalIntentBase'
+    - type: object
+      required: [status, tx]
+      properties:
+        status:
+          type: string
+          enum: [SENT]
+        tx:
+          $ref: '#/TxInfo'
+        failure:
+          type: "null"
+
+WithdrawalIntentConfirmed:
+  allOf:
+    - $ref: '#/WithdrawalIntentBase'
+    - type: object
+      required: [status, tx]
+      properties:
+        status:
+          type: string
+          enum: [CONFIRMED]
+        tx:
+          $ref: '#/TxInfo'
+        failure:
+          type: "null"
+
+WithdrawalIntentCancelled:
+  allOf:
+    - $ref: '#/WithdrawalIntentBase'
+    - type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [CANCELLED]
+        tx:
+          type: "null"
+        failure:
+          type: "null"
+
+WithdrawalIntentFailed:
+  allOf:
+    - $ref: '#/WithdrawalIntentBase'
+    - type: object
+      required: [status, failure]
+      properties:
+        status:
+          type: string
+          enum: [FAILED]
+        tx:
+          type: "null"
+        failure:
+          $ref: '#/Failure'
+
+WithdrawalIntentResponse:
+  oneOf:
+    - $ref: '#/WithdrawalIntentPending'
+    - $ref: '#/WithdrawalIntentLocked'
+    - $ref: '#/WithdrawalIntentSending'
+    - $ref: '#/WithdrawalIntentSent'
+    - $ref: '#/WithdrawalIntentConfirmed'
+    - $ref: '#/WithdrawalIntentCancelled'
+    - $ref: '#/WithdrawalIntentFailed'
+  discriminator:
+    propertyName: status
+    mapping:
+      PENDING: '#/WithdrawalIntentPending'
+      LOCKED: '#/WithdrawalIntentLocked'
+      SENDING: '#/WithdrawalIntentSending'
+      SENT: '#/WithdrawalIntentSent'
+      CONFIRMED: '#/WithdrawalIntentConfirmed'
+      CANCELLED: '#/WithdrawalIntentCancelled'
+      FAILED: '#/WithdrawalIntentFailed'
+
+# -------------------------
+# Wallet Balance
+# -------------------------
+WalletBalanceStatus:
+  type: string
+  enum: [OK, LOW, STALE, UNAVAILABLE, FAILED]
+
+WalletBalanceBase:
+  type: object
+  additionalProperties: false
+  required: [asset, network, status, observed_at, poll_after_ms]
+  properties:
+    asset:
+      $ref: '#/Asset'
+    network:
+      $ref: '#/Network'
+    status:
+      $ref: '#/WalletBalanceStatus'
+    observed_at:
+      type: string
+      format: date-time
+      description: When this snapshot was observed (or last refreshed).
+    staleness_ms:
+      type: integer
+      minimum: 0
+      description: How old this snapshot is compared to "now" (best-effort).
+    poll_after_ms:
+      type: integer
+      minimum: 0
+      description: Server-suggested polling delay.
+
+WalletBalanceOk:
+  allOf:
+    - $ref: '#/WalletBalanceBase'
+    - type: object
+      required: [status, total, spendable]
+      properties:
+        status:
+          type: string
+          enum: [OK, LOW, STALE]
+        total:
+          $ref: '#/AmountString'
+          description: Total balance controlled by hot wallet (best-effort).
+        spendable:
+          $ref: '#/AmountString'
+          description: Spendable amount (after locks, minimum reserves, etc.).
+        reserved_for_fees:
+          $ref: '#/AmountString'
+          description: Operational fee reserve (optional/best-effort).
+        estimated_fee:
+          $ref: '#/AmountString'
+          description: Estimated fee for a typical send (optional/best-effort).
+        buffer_required:
+          $ref: '#/AmountString'
+          description: Recommended safety buffer (optional).
+        can_send_min_required_amount:
+          oneOf:
+            - type: boolean
+            - type: "null"
+          description: Result of preflight if min_required_amount was provided; null otherwise.
+        notes:
+          type: array
+          items:
+            type: string
+          description: Optional informational notes/codes.
+        failure:
+          type: "null"
+
+WalletBalanceUnavailable:
+  allOf:
+    - $ref: '#/WalletBalanceBase'
+    - type: object
+      required: [status, failure]
+      properties:
+        status:
+          type: string
+          enum: [UNAVAILABLE, FAILED]
+        total:
+          type: "null"
+        spendable:
+          type: "null"
+        reserved_for_fees:
+          type: "null"
+        estimated_fee:
+          type: "null"
+        buffer_required:
+          type: "null"
+        can_send_min_required_amount:
+          type: "null"
+        notes:
+          type: array
+          items:
+            type: string
+        failure:
+          $ref: '#/Failure'
+
+WalletBalanceResponse:
+  oneOf:
+    - $ref: '#/WalletBalanceOk'
+    - $ref: '#/WalletBalanceUnavailable'
+  discriminator:
+    propertyName: status
+    mapping:
+      OK: '#/WalletBalanceOk'
+      LOW: '#/WalletBalanceOk'
+      STALE: '#/WalletBalanceOk'
+      UNAVAILABLE: '#/WalletBalanceUnavailable'
+      FAILED: '#/WalletBalanceUnavailable'
+
+# -------------------------
+# Address Validation
+# -------------------------
+AddressValidationStatus:
+  type: string
+  enum: [VALID, INVALID, UNKNOWN, UNAVAILABLE]
+
+AddressValidationRequest:
+  type: object
+  additionalProperties: false
+  required: [asset, network, address]
+  properties:
+    asset:
+      $ref: '#/Asset'
+    network:
+      $ref: '#/Network'
+    address:
+      $ref: '#/Address'
+    memo:
+      oneOf:
+        - type: string
+        - type: "null"
+      description: Optional memo/tag for networks that require it.
+    metadata:
+      $ref: '#/JsonObject'
+      description: Extensible validation hints (e.g., "address_type": "contract").
+
+AddressValidationBase:
+  type: object
+  additionalProperties: false
+  required: [asset, network, address, status, poll_after_ms]
+  properties:
+    asset:
+      $ref: '#/Asset'
+    network:
+      $ref: '#/Network'
+    address:
+      $ref: '#/Address'
+    status:
+      $ref: '#/AddressValidationStatus'
+    poll_after_ms:
+      type: integer
+      minimum: 0
+      description: Server-suggested polling delay (usually small).
+
+AddressValidationValid:
+  allOf:
+    - $ref: '#/AddressValidationBase'
+    - type: object
+      required: [status, is_valid]
+      properties:
+        status:
+          type: string
+          enum: [VALID]
+        is_valid:
+          type: boolean
+          enum: [true]
+        normalized_address:
+          oneOf:
+            - type: string
+            - type: "null"
+          description: Normalized form if available (e.g. checksum).
+        reasons:
+          type: array
+          items:
+            type: string
+          description: Optional informational codes.
+        failure:
+          type: "null"
+
+AddressValidationInvalid:
+  allOf:
+    - $ref: '#/AddressValidationBase'
+    - type: object
+      required: [status, is_valid, reasons]
+      properties:
+        status:
+          type: string
+          enum: [INVALID]
+        is_valid:
+          type: boolean
+          enum: [false]
+        normalized_address:
+          type: "null"
+        reasons:
+          type: array
+          items:
+            type: string
+          description: Machine-readable reason codes (e.g., BAD_CHECKSUM, WRONG_PREFIX).
+        failure:
+          type: "null"
+
+AddressValidationUnknown:
+  allOf:
+    - $ref: '#/AddressValidationBase'
+    - type: object
+      required: [status, is_valid, failure]
+      properties:
+        status:
+          type: string
+          enum: [UNKNOWN, UNAVAILABLE]
+        is_valid:
+          oneOf:
+            - type: boolean
+            - type: "null"
+          description: null when validation cannot be determined.
+        normalized_address:
+          type: "null"
+        reasons:
+          type: array
+          items:
+            type: string
+        failure:
+          $ref: '#/Failure'
+
+AddressValidationResponse:
+  oneOf:
+    - $ref: '#/AddressValidationValid'
+    - $ref: '#/AddressValidationInvalid'
+    - $ref: '#/AddressValidationUnknown'
+  discriminator:
+    propertyName: status
+    mapping:
+      VALID: '#/AddressValidationValid'
+      INVALID: '#/AddressValidationInvalid'
+      UNKNOWN: '#/AddressValidationUnknown'
+      UNAVAILABLE: '#/AddressValidationUnknown'
