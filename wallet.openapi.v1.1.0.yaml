@@ -25,6 +25,8 @@ tags:
     description: Deposit intent lifecycle (address provisioning, observation, capture)
   - name: Withdrawals
     description: Withdrawal intent lifecycle (reserve, batching, sending, cancel)
+  - name: Utilities
+    description: Helper endpoints (wallet balance snapshot, address validation)
 
 security:
   - bearerAuth: []
@@ -322,6 +324,106 @@ paths:
                 $ref: '#/components/schemas/ApiError'
         '409':
           description: Cannot cancel (not in PENDING)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+
+  /v1/wallet-balance:
+    get:
+      tags: [Utilities]
+      operationId: getWalletBalance
+      summary: Get hot-wallet spendable balance snapshot (polling)
+      description: |
+        Returns a snapshot of the service hot-wallet balance for a given asset/network.
+
+        Use cases:
+        - Pre-flight check before sending a withdrawal batch
+        - Monitoring and alerting (insufficient funds, RPC outage)
+        - UI dashboards (read-only)
+
+        Notes:
+        - This is service-level balance (not user balance).
+        - Errors are returned as a typed resource state (UNAVAILABLE/FAILED), not transport errors.
+        - The response may be slightly stale; see observed_at and staleness_ms.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: asset
+          in: query
+          required: true
+          schema:
+            $ref: '#/components/schemas/Asset'
+        - name: network
+          in: query
+          required: true
+          schema:
+            $ref: '#/components/schemas/Network'
+        - name: min_required_amount
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/AmountString'
+          description: |
+            Optional preflight amount check. If provided, the server can evaluate
+            whether spendable >= (min_required_amount + estimated_fee + buffer).
+        - name: include_fee_estimate
+          in: query
+          required: false
+          schema:
+            type: boolean
+            default: true
+          description: Whether to include estimated fee fields (best-effort).
+      responses:
+        '200':
+          description: Wallet balance snapshot (OK or typed non-OK state)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WalletBalanceResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+
+  /v1/address-validations:
+    post:
+      tags: [Utilities]
+      operationId: validateAddress
+      summary: Validate a destination address on a given network
+      description: |
+        Validates whether a provided address is syntactically and network-valid
+        (best-effort), without broadcasting or creating any on-chain state.
+
+        Notes:
+        - Some networks require additional fields (e.g. memo/tag); allow metadata for extensibility.
+        - This endpoint is safe to call frequently.
+        - If validation depends on upstream RPC and it's unavailable, status becomes UNKNOWN/UNAVAILABLE with failure.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AddressValidationRequest'
+      responses:
+        '200':
+          description: Address validation result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AddressValidationResponse'
+        '400':
+          description: Invalid request (bad format)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+        '401':
+          description: Unauthorized
           content:
             application/json:
               schema:
@@ -1022,3 +1124,238 @@ components:
           CONFIRMED: '#/components/schemas/WithdrawalIntentConfirmed'
           CANCELLED: '#/components/schemas/WithdrawalIntentCancelled'
           FAILED: '#/components/schemas/WithdrawalIntentFailed'
+
+    # -------------------------
+    # Wallet Balance
+    # -------------------------
+    WalletBalanceStatus:
+      type: string
+      enum: [OK, LOW, STALE, UNAVAILABLE, FAILED]
+
+    WalletBalanceBase:
+      type: object
+      additionalProperties: false
+      required: [asset, network, status, observed_at, poll_after_ms]
+      properties:
+        asset:
+          $ref: '#/components/schemas/Asset'
+        network:
+          $ref: '#/components/schemas/Network'
+        status:
+          $ref: '#/components/schemas/WalletBalanceStatus'
+        observed_at:
+          type: string
+          format: date-time
+          description: When this snapshot was observed (or last refreshed).
+        staleness_ms:
+          type: integer
+          minimum: 0
+          description: How old this snapshot is compared to "now" (best-effort).
+        poll_after_ms:
+          type: integer
+          minimum: 0
+          description: Server-suggested polling delay.
+
+    WalletBalanceOk:
+      allOf:
+        - $ref: '#/components/schemas/WalletBalanceBase'
+        - type: object
+          required: [status, total, spendable]
+          properties:
+            status:
+              type: string
+              enum: [OK, LOW, STALE]
+            total:
+              $ref: '#/components/schemas/AmountString'
+              description: Total balance controlled by hot wallet (best-effort).
+            spendable:
+              $ref: '#/components/schemas/AmountString'
+              description: Spendable amount (after locks, minimum reserves, etc.).
+            reserved_for_fees:
+              $ref: '#/components/schemas/AmountString'
+              description: Operational fee reserve (optional/best-effort).
+            estimated_fee:
+              $ref: '#/components/schemas/AmountString'
+              description: Estimated fee for a typical send (optional/best-effort).
+            buffer_required:
+              $ref: '#/components/schemas/AmountString'
+              description: Recommended safety buffer (optional).
+            can_send_min_required_amount:
+              type: boolean
+              nullable: true
+              description: |
+                Result of preflight if min_required_amount was provided; null otherwise.
+            notes:
+              type: array
+              items:
+                type: string
+              description: Optional informational notes/codes.
+
+            failure:
+              type: 'null'
+
+    WalletBalanceUnavailable:
+      allOf:
+        - $ref: '#/components/schemas/WalletBalanceBase'
+        - type: object
+          required: [status, failure]
+          properties:
+            status:
+              type: string
+              enum: [UNAVAILABLE, FAILED]
+            total:
+              type: 'null'
+            spendable:
+              type: 'null'
+            reserved_for_fees:
+              type: 'null'
+            estimated_fee:
+              type: 'null'
+            buffer_required:
+              type: 'null'
+            can_send_min_required_amount:
+              type: 'null'
+            notes:
+              type: array
+              items:
+                type: string
+            failure:
+              $ref: '#/components/schemas/Failure'
+
+    WalletBalanceResponse:
+      oneOf:
+        - $ref: '#/components/schemas/WalletBalanceOk'
+        - $ref: '#/components/schemas/WalletBalanceUnavailable'
+      discriminator:
+        propertyName: status
+        mapping:
+          OK: '#/components/schemas/WalletBalanceOk'
+          LOW: '#/components/schemas/WalletBalanceOk'
+          STALE: '#/components/schemas/WalletBalanceOk'
+          UNAVAILABLE: '#/components/schemas/WalletBalanceUnavailable'
+          FAILED: '#/components/schemas/WalletBalanceUnavailable'
+
+    # -------------------------
+    # Address Validation
+    # -------------------------
+    AddressValidationStatus:
+      type: string
+      enum: [VALID, INVALID, UNKNOWN, UNAVAILABLE]
+
+    AddressValidationRequest:
+      type: object
+      additionalProperties: false
+      required: [asset, network, address]
+      properties:
+        asset:
+          $ref: '#/components/schemas/Asset'
+        network:
+          $ref: '#/components/schemas/Network'
+        address:
+          $ref: '#/components/schemas/Address'
+        memo:
+          type: string
+          nullable: true
+          description: Optional memo/tag for networks that require it.
+        metadata:
+          $ref: '#/components/schemas/JsonObject'
+          description: Extensible validation hints (e.g., "address_type": "contract").
+
+    AddressValidationBase:
+      type: object
+      additionalProperties: false
+      required: [asset, network, address, status, poll_after_ms]
+      properties:
+        asset:
+          $ref: '#/components/schemas/Asset'
+        network:
+          $ref: '#/components/schemas/Network'
+        address:
+          $ref: '#/components/schemas/Address'
+        status:
+          $ref: '#/components/schemas/AddressValidationStatus'
+        poll_after_ms:
+          type: integer
+          minimum: 0
+          description: Server-suggested polling delay (usually small).
+
+    AddressValidationValid:
+      allOf:
+        - $ref: '#/components/schemas/AddressValidationBase'
+        - type: object
+          required: [status, is_valid]
+          properties:
+            status:
+              type: string
+              enum: [VALID]
+            is_valid:
+              type: boolean
+              enum: [true]
+            normalized_address:
+              type: string
+              nullable: true
+              description: Normalized form if available (e.g. checksum).
+            reasons:
+              type: array
+              items:
+                type: string
+              description: Optional informational codes.
+            failure:
+              type: 'null'
+
+    AddressValidationInvalid:
+      allOf:
+        - $ref: '#/components/schemas/AddressValidationBase'
+        - type: object
+          required: [status, is_valid, reasons]
+          properties:
+            status:
+              type: string
+              enum: [INVALID]
+            is_valid:
+              type: boolean
+              enum: [false]
+            normalized_address:
+              type: 'null'
+            reasons:
+              type: array
+              items:
+                type: string
+              description: Machine-readable reason codes (e.g., BAD_CHECKSUM, WRONG_PREFIX).
+            failure:
+              type: 'null'
+
+    AddressValidationUnknown:
+      allOf:
+        - $ref: '#/components/schemas/AddressValidationBase'
+        - type: object
+          required: [status, is_valid, failure]
+          properties:
+            status:
+              type: string
+              enum: [UNKNOWN, UNAVAILABLE]
+            is_valid:
+              type: boolean
+              nullable: true
+              description: null when validation cannot be determined.
+            normalized_address:
+              type: 'null'
+            reasons:
+              type: array
+              items:
+                type: string
+            failure:
+              $ref: '#/components/schemas/Failure'
+
+    AddressValidationResponse:
+      oneOf:
+        - $ref: '#/components/schemas/AddressValidationValid'
+        - $ref: '#/components/schemas/AddressValidationInvalid'
+        - $ref: '#/components/schemas/AddressValidationUnknown'
+      discriminator:
+        propertyName: status
+        mapping:
+          VALID: '#/components/schemas/AddressValidationValid'
+          INVALID: '#/components/schemas/AddressValidationInvalid'
+          UNKNOWN: '#/components/schemas/AddressValidationUnknown'
+          UNAVAILABLE: '#/components/schemas/AddressValidationUnknown'
