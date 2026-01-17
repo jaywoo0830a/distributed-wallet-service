@@ -1,35 +1,4 @@
 services:
-  api:
-    image: node:24-alpine
-    working_dir: /app
-    volumes:
-      - ./:/app
-    command: sh -lc "npm ci && npm run build && npm run migrate && npm run start"
-    environment:
-      NODE_ENV: development
-      PORT: 3000
-      DATABASE_URL: mysql://wallet:wallet@mysql:3306/wallet_api
-      REDIS_URL: redis://redis:6379
-    ports:
-      - "3000:3000"
-    depends_on:
-      - mysql
-      - redis
-
-  worker:
-    image: node:24-alpine
-    working_dir: /app
-    volumes:
-      - ./:/app
-    command: sh -lc "npm ci && npm run build && npm run migrate && npm run worker"
-    environment:
-      NODE_ENV: development
-      DATABASE_URL: mysql://wallet:wallet@mysql:3306/wallet_api
-      REDIS_URL: redis://redis:6379
-    depends_on:
-      - mysql
-      - redis
-
   mysql:
     image: mysql:8.4.0
     environment:
@@ -41,11 +10,76 @@ services:
       - "3306:3306"
     volumes:
       - mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -proot --silent"]
+      interval: 2s
+      timeout: 3s
+      retries: 40
+      start_period: 10s
 
   redis:
     image: redis:latest
     ports:
       - "6379:6379"
+
+  # One-shot migration job (runs once, then exits 0)
+  migrate:
+    image: node:24-alpine
+    working_dir: /app
+    volumes:
+      - ./:/app
+    command: sh -lc "npm install && npm run build && npm run migrate"
+    environment:
+      NODE_ENV: development
+      DATABASE_URL: mysql://wallet:wallet@mysql:3306/wallet_api
+      REDIS_URL: redis://redis:6379
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    restart: "no"
+
+  api:
+    image: node:24-alpine
+    working_dir: /app
+    volumes:
+      - ./:/app
+    command: sh -lc "npm install && npm run build && npm run start"
+    environment:
+      NODE_ENV: development
+      PORT: 3000
+      DATABASE_URL: mysql://wallet:wallet@mysql:3306/wallet_api
+      REDIS_URL: redis://redis:6379
+    ports:
+      - "3000:3000"
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  worker:
+    image: node:24-alpine
+    working_dir: /app
+    volumes:
+      - ./:/app
+    command: sh -lc "npm install && npm run build && npm run worker"
+    environment:
+      NODE_ENV: development
+      DATABASE_URL: mysql://wallet:wallet@mysql:3306/wallet_api
+      REDIS_URL: redis://redis:6379
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
 
 volumes:
   mysql_data:
