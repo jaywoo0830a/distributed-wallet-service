@@ -1,0 +1,1024 @@
+openapi: 3.0.3
+info:
+  title: Wallet API
+  version: 1.1.0
+  description: |
+    Polling-based, concurrency-safe, idempotent Wallet API supporting deposits and withdrawals.
+
+    Key principles:
+    - Clients poll resources via GET (no webhooks).
+    - Internals are asynchronous.
+    - Critical actions are explicit and at-most-once:
+      - Deposit capture: exactly once per DepositIntent.
+      - Withdrawal sending: at-most-once per WithdrawalIntent via internal batching.
+    - Errors are expressed as resource state (failure object), not transport errors.
+    - Response schemas are strongly typed by status using oneOf to prevent client mistakes.
+
+servers:
+  - url: https://api.example.com
+    description: Production (example)
+  - url: https://sandbox.example.com
+    description: Sandbox (example)
+
+tags:
+  - name: Deposits
+    description: Deposit intent lifecycle (address provisioning, observation, capture)
+  - name: Withdrawals
+    description: Withdrawal intent lifecycle (reserve, batching, sending, cancel)
+
+security:
+  - bearerAuth: []
+
+paths:
+  /v1/deposit-intents:
+    post:
+      tags: [Deposits]
+      operationId: createDepositIntent
+      summary: Create a DepositIntent
+      description: |
+        Creates a new deposit intent. Address provisioning happens asynchronously.
+        Clients should poll the created resource for address and progress updates.
+
+        Idempotency:
+        - reference.idempotency_key prevents duplicate creations.
+        - If the same idempotency key is reused with a different payload, the server must reject with 409.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateDepositIntentRequest'
+      responses:
+        '201':
+          description: DepositIntent created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DepositIntentResponse'
+        '400':
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+        '409':
+          description: Idempotency conflict (same key, different payload)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+
+  /v1/deposit-intents/{id}:
+    get:
+      tags: [Deposits]
+      operationId: getDepositIntent
+      summary: Get a DepositIntent (polling)
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/DepositIntentId'
+      responses:
+        '200':
+          description: DepositIntent
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DepositIntentResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+        '404':
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+
+  /v1/deposit-intents/{id}/refresh:
+    post:
+      tags: [Deposits]
+      operationId: refreshDepositIntent
+      summary: Refresh deposit observation (optional)
+      description: |
+        Queues an asynchronous observation job. Safe to call multiple times.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/DepositIntentId'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EmptyObject'
+      responses:
+        '202':
+          description: Observation refresh queued
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DepositRefreshResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+        '404':
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+
+  /v1/deposit-intents/{id}/capture:
+    post:
+      tags: [Deposits]
+      operationId: captureDepositIntent
+      summary: Capture (finalize) a DepositIntent (critical section)
+      description: |
+        Finalizes the deposit exactly once.
+        This endpoint is idempotent and concurrency-safe.
+
+        Upstream systems must only proceed after CAPTURED.
+
+        Idempotency:
+        - This request has its own idempotency_key (separate from intent creation).
+        - Replays return the original CAPTURED resource.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/DepositIntentId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CaptureDepositIntentRequest'
+      responses:
+        '200':
+          description: Capture result (first capture or replay)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DepositIntentResponse'
+        '400':
+          description: Invalid request (e.g. bad format)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+        '404':
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+        '409':
+          description: Capture conflict (e.g. incompatible replay)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+
+  /v1/withdrawal-intents:
+    post:
+      tags: [Withdrawals]
+      operationId: createWithdrawalIntent
+      summary: Create a WithdrawalIntent (reserve funds)
+      description: |
+        Creates a new withdrawal intent and reserves user funds atomically.
+        Actual wallet transfer happens asynchronously (usually via internal batching).
+
+        Authentication:
+        - The user identity is derived from the auth context (bearer token).
+        - Do NOT pass user_id in the request body for security reasons.
+
+        Idempotency:
+        - reference.idempotency_key prevents duplicate creations.
+        - If the same idempotency key is reused with a different payload, the server must reject with 409.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateWithdrawalIntentRequest'
+      responses:
+        '201':
+          description: WithdrawalIntent created and funds reserved
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WithdrawalIntentResponse'
+        '400':
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+        '402':
+          description: Insufficient balance / funds not reservable
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+        '409':
+          description: Idempotency conflict (same key, different payload)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+
+  /v1/withdrawal-intents/{id}:
+    get:
+      tags: [Withdrawals]
+      operationId: getWithdrawalIntent
+      summary: Get a WithdrawalIntent (polling)
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/WithdrawalIntentId'
+      responses:
+        '200':
+          description: WithdrawalIntent
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WithdrawalIntentResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+        '404':
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+
+  /v1/withdrawal-intents/{id}/cancel:
+    post:
+      tags: [Withdrawals]
+      operationId: cancelWithdrawalIntent
+      summary: Cancel a WithdrawalIntent (PENDING only)
+      description: |
+        Cancels a withdrawal only if it is still PENDING (not assigned to a batch).
+        Reserved funds are released.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/WithdrawalIntentId'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EmptyObject'
+      responses:
+        '200':
+          description: Cancellation result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WithdrawalIntentResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+        '404':
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+        '409':
+          description: Cannot cancel (not in PENDING)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  parameters:
+    DepositIntentId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+      description: DepositIntent identifier
+
+    WithdrawalIntentId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+      description: WithdrawalIntent identifier
+
+  schemas:
+    EmptyObject:
+      type: object
+      additionalProperties: false
+      description: An empty JSON object.
+
+    JsonObject:
+      type: object
+      additionalProperties: true
+      description: Arbitrary JSON object.
+
+    Reference:
+      type: object
+      additionalProperties: false
+      required: [idempotency_key]
+      properties:
+        idempotency_key:
+          type: string
+          minLength: 1
+          description: |
+            Idempotency key for safely retrying requests.
+            Reusing the same key with a different payload must yield 409.
+        external_ids:
+          $ref: '#/components/schemas/JsonObject'
+      description: Opaque integration references.
+
+    Failure:
+      type: object
+      additionalProperties: false
+      required: [code, message, retryable]
+      properties:
+        code:
+          type: string
+          description: Machine-readable failure code.
+        message:
+          type: string
+          description: Human-readable failure message.
+        retryable:
+          type: boolean
+          description: Whether retrying later could succeed.
+        last_error_at:
+          type: string
+          format: date-time
+          description: Timestamp of the last error occurrence (if applicable).
+
+    ApiError:
+      type: object
+      additionalProperties: false
+      required: [code, message]
+      properties:
+        code:
+          type: string
+        message:
+          type: string
+        details:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+
+    AmountString:
+      type: string
+      pattern: '^[0-9]+(\.[0-9]+)?$'
+      description: Decimal amount as a string (e.g., "0.015", "152.34").
+
+    Asset:
+      type: string
+      description: Asset symbol or identifier (implementation-defined).
+      example: USDT
+
+    Network:
+      type: string
+      description: Network identifier (implementation-defined).
+      example: TRON
+
+    Address:
+      type: string
+      minLength: 1
+      description: Blockchain address string.
+
+    DepositPolicy:
+      type: object
+      additionalProperties: false
+      properties:
+        min_confirmations:
+          type: integer
+          minimum: 0
+          default: 0
+        allow_overpay:
+          type: boolean
+          default: true
+        allow_underpay:
+          type: boolean
+          default: false
+      description: Deposit acceptance policy.
+
+    Eligibility:
+      type: object
+      additionalProperties: false
+      required: [is_eligible, reasons]
+      properties:
+        is_eligible:
+          type: boolean
+        reasons:
+          type: array
+          items:
+            type: string
+          description: Reasons when not eligible (implementation-defined codes).
+
+    DepositCaptureInfo:
+      type: object
+      additionalProperties: false
+      required: [capture_id, captured_at]
+      properties:
+        capture_id:
+          type: string
+        captured_at:
+          type: string
+          format: date-time
+
+    DepositIntentStatus:
+      type: string
+      enum:
+        - CREATED
+        - ADDRESS_PENDING
+        - AWAITING_DEPOSIT
+        - OBSERVED
+        - ELIGIBLE
+        - CAPTURE_PENDING
+        - CAPTURED
+        - EXPIRED
+        - CANCELLED
+        - FAILED
+
+    WithdrawalIntentStatus:
+      type: string
+      enum:
+        - PENDING
+        - LOCKED
+        - SENDING
+        - SENT
+        - CONFIRMED
+        - FAILED
+        - CANCELLED
+
+    WithdrawalBatchStatus:
+      type: string
+      enum:
+        - CREATED
+        - SENDING
+        - SENT
+        - UNKNOWN
+        - FAILED
+
+    TxInfo:
+      type: object
+      additionalProperties: false
+      required: [txid]
+      properties:
+        txid:
+          type: string
+        sent_at:
+          type: string
+          format: date-time
+
+    DebugBatchInfo:
+      type: object
+      additionalProperties: false
+      properties:
+        batch_id:
+          type: string
+          nullable: true
+          description: Debug-only batch identifier (optional).
+        batch_status:
+          $ref: '#/components/schemas/WithdrawalBatchStatus'
+      description: Optional debug information about internal batching.
+
+    # -------------------------
+    # Requests
+    # -------------------------
+
+    CreateDepositIntentRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - asset
+        - network
+        - expected_amount
+        - expires_at
+        - reference
+      properties:
+        asset:
+          $ref: '#/components/schemas/Asset'
+        network:
+          $ref: '#/components/schemas/Network'
+        expected_amount:
+          $ref: '#/components/schemas/AmountString'
+        expires_at:
+          type: string
+          format: date-time
+        policy:
+          $ref: '#/components/schemas/DepositPolicy'
+        reference:
+          $ref: '#/components/schemas/Reference'
+        metadata:
+          $ref: '#/components/schemas/JsonObject'
+
+    CaptureDepositIntentRequest:
+      type: object
+      additionalProperties: false
+      required: [idempotency_key, expected_amount]
+      properties:
+        idempotency_key:
+          type: string
+          minLength: 1
+          description: Idempotency key for the capture request.
+        expected_amount:
+          $ref: '#/components/schemas/AmountString'
+
+    CreateWithdrawalIntentRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - asset
+        - network
+        - amount
+        - to_address
+        - reference
+      properties:
+        asset:
+          $ref: '#/components/schemas/Asset'
+        network:
+          $ref: '#/components/schemas/Network'
+        amount:
+          $ref: '#/components/schemas/AmountString'
+        to_address:
+          $ref: '#/components/schemas/Address'
+        reference:
+          $ref: '#/components/schemas/Reference'
+        metadata:
+          $ref: '#/components/schemas/JsonObject'
+
+    # -------------------------
+    # DepositIntent: base + status-specific variants
+    # -------------------------
+
+    DepositIntentBase:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - asset
+        - network
+        - expected_amount
+        - received_amount
+        - expires_at
+        - reference
+        - metadata
+        - poll_after_ms
+      properties:
+        id:
+          type: string
+        asset:
+          $ref: '#/components/schemas/Asset'
+        network:
+          $ref: '#/components/schemas/Network'
+        expected_amount:
+          $ref: '#/components/schemas/AmountString'
+        received_amount:
+          $ref: '#/components/schemas/AmountString'
+        min_confirmations:
+          type: integer
+          minimum: 0
+          description: Effective required confirmations (policy-applied).
+        current_confirmations:
+          type: integer
+          minimum: 0
+        expires_at:
+          type: string
+          format: date-time
+        reference:
+          $ref: '#/components/schemas/Reference'
+        metadata:
+          $ref: '#/components/schemas/JsonObject'
+        poll_after_ms:
+          type: integer
+          minimum: 0
+          description: Server-suggested polling delay.
+
+    DepositIntentCreated:
+      allOf:
+        - $ref: '#/components/schemas/DepositIntentBase'
+        - type: object
+          required: [status, address]
+          properties:
+            status:
+              type: string
+              enum: [CREATED]
+            address:
+              type: 'null'
+            eligibility:
+              type: 'null'
+            capture:
+              type: 'null'
+            failure:
+              type: 'null'
+
+    DepositIntentAddressPending:
+      allOf:
+        - $ref: '#/components/schemas/DepositIntentBase'
+        - type: object
+          required: [status, address]
+          properties:
+            status:
+              type: string
+              enum: [ADDRESS_PENDING]
+            address:
+              type: 'null'
+            eligibility:
+              type: 'null'
+            capture:
+              type: 'null'
+            failure:
+              type: 'null'
+
+    DepositIntentAwaitingDeposit:
+      allOf:
+        - $ref: '#/components/schemas/DepositIntentBase'
+        - type: object
+          required: [status, address]
+          properties:
+            status:
+              type: string
+              enum: [AWAITING_DEPOSIT]
+            address:
+              $ref: '#/components/schemas/Address'
+            eligibility:
+              $ref: '#/components/schemas/Eligibility'
+            capture:
+              type: 'null'
+            failure:
+              type: 'null'
+
+    DepositIntentObserved:
+      allOf:
+        - $ref: '#/components/schemas/DepositIntentBase'
+        - type: object
+          required: [status, address, eligibility]
+          properties:
+            status:
+              type: string
+              enum: [OBSERVED]
+            address:
+              $ref: '#/components/schemas/Address'
+            eligibility:
+              $ref: '#/components/schemas/Eligibility'
+            capture:
+              type: 'null'
+            failure:
+              type: 'null'
+
+    DepositIntentEligible:
+      allOf:
+        - $ref: '#/components/schemas/DepositIntentBase'
+        - type: object
+          required: [status, address, eligibility]
+          properties:
+            status:
+              type: string
+              enum: [ELIGIBLE]
+            address:
+              $ref: '#/components/schemas/Address'
+            eligibility:
+              $ref: '#/components/schemas/Eligibility'
+            capture:
+              type: 'null'
+            failure:
+              type: 'null'
+
+    DepositIntentCapturePending:
+      allOf:
+        - $ref: '#/components/schemas/DepositIntentBase'
+        - type: object
+          required: [status, address, eligibility]
+          properties:
+            status:
+              type: string
+              enum: [CAPTURE_PENDING]
+            address:
+              $ref: '#/components/schemas/Address'
+            eligibility:
+              $ref: '#/components/schemas/Eligibility'
+            capture:
+              type: 'null'
+            failure:
+              type: 'null'
+
+    DepositIntentCaptured:
+      allOf:
+        - $ref: '#/components/schemas/DepositIntentBase'
+        - type: object
+          required: [status, address, capture]
+          properties:
+            status:
+              type: string
+              enum: [CAPTURED]
+            address:
+              $ref: '#/components/schemas/Address'
+            eligibility:
+              $ref: '#/components/schemas/Eligibility'
+            capture:
+              $ref: '#/components/schemas/DepositCaptureInfo'
+            failure:
+              type: 'null'
+
+    DepositIntentExpired:
+      allOf:
+        - $ref: '#/components/schemas/DepositIntentBase'
+        - type: object
+          required: [status]
+          properties:
+            status:
+              type: string
+              enum: [EXPIRED]
+            address:
+              oneOf:
+                - $ref: '#/components/schemas/Address'
+                - type: 'null'
+            eligibility:
+              $ref: '#/components/schemas/Eligibility'
+            capture:
+              type: 'null'
+            failure:
+              type: 'null'
+
+    DepositIntentCancelled:
+      allOf:
+        - $ref: '#/components/schemas/DepositIntentBase'
+        - type: object
+          required: [status]
+          properties:
+            status:
+              type: string
+              enum: [CANCELLED]
+            address:
+              oneOf:
+                - $ref: '#/components/schemas/Address'
+                - type: 'null'
+            eligibility:
+              $ref: '#/components/schemas/Eligibility'
+            capture:
+              type: 'null'
+            failure:
+              type: 'null'
+
+    DepositIntentFailed:
+      allOf:
+        - $ref: '#/components/schemas/DepositIntentBase'
+        - type: object
+          required: [status, failure]
+          properties:
+            status:
+              type: string
+              enum: [FAILED]
+            address:
+              oneOf:
+                - $ref: '#/components/schemas/Address'
+                - type: 'null'
+            eligibility:
+              $ref: '#/components/schemas/Eligibility'
+            capture:
+              type: 'null'
+            failure:
+              $ref: '#/components/schemas/Failure'
+
+    DepositIntentResponse:
+      oneOf:
+        - $ref: '#/components/schemas/DepositIntentCreated'
+        - $ref: '#/components/schemas/DepositIntentAddressPending'
+        - $ref: '#/components/schemas/DepositIntentAwaitingDeposit'
+        - $ref: '#/components/schemas/DepositIntentObserved'
+        - $ref: '#/components/schemas/DepositIntentEligible'
+        - $ref: '#/components/schemas/DepositIntentCapturePending'
+        - $ref: '#/components/schemas/DepositIntentCaptured'
+        - $ref: '#/components/schemas/DepositIntentExpired'
+        - $ref: '#/components/schemas/DepositIntentCancelled'
+        - $ref: '#/components/schemas/DepositIntentFailed'
+      discriminator:
+        propertyName: status
+        mapping:
+          CREATED: '#/components/schemas/DepositIntentCreated'
+          ADDRESS_PENDING: '#/components/schemas/DepositIntentAddressPending'
+          AWAITING_DEPOSIT: '#/components/schemas/DepositIntentAwaitingDeposit'
+          OBSERVED: '#/components/schemas/DepositIntentObserved'
+          ELIGIBLE: '#/components/schemas/DepositIntentEligible'
+          CAPTURE_PENDING: '#/components/schemas/DepositIntentCapturePending'
+          CAPTURED: '#/components/schemas/DepositIntentCaptured'
+          EXPIRED: '#/components/schemas/DepositIntentExpired'
+          CANCELLED: '#/components/schemas/DepositIntentCancelled'
+          FAILED: '#/components/schemas/DepositIntentFailed'
+
+    DepositRefreshResponse:
+      type: object
+      additionalProperties: false
+      required: [id, queued, status, poll_after_ms]
+      properties:
+        id:
+          type: string
+        queued:
+          type: boolean
+        status:
+          $ref: '#/components/schemas/DepositIntentStatus'
+        poll_after_ms:
+          type: integer
+          minimum: 0
+
+    # -------------------------
+    # WithdrawalIntent: base + status-specific variants
+    # -------------------------
+
+    WithdrawalIntentBase:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - asset
+        - network
+        - amount
+        - to_address
+        - reference
+        - metadata
+        - poll_after_ms
+      properties:
+        id:
+          type: string
+        asset:
+          $ref: '#/components/schemas/Asset'
+        network:
+          $ref: '#/components/schemas/Network'
+        amount:
+          $ref: '#/components/schemas/AmountString'
+        to_address:
+          $ref: '#/components/schemas/Address'
+        reference:
+          $ref: '#/components/schemas/Reference'
+        metadata:
+          $ref: '#/components/schemas/JsonObject'
+        poll_after_ms:
+          type: integer
+          minimum: 0
+          description: Server-suggested polling delay.
+        debug:
+          $ref: '#/components/schemas/DebugBatchInfo'
+
+    WithdrawalIntentPending:
+      allOf:
+        - $ref: '#/components/schemas/WithdrawalIntentBase'
+        - type: object
+          required: [status]
+          properties:
+            status:
+              type: string
+              enum: [PENDING]
+            tx:
+              type: 'null'
+            failure:
+              type: 'null'
+
+    WithdrawalIntentLocked:
+      allOf:
+        - $ref: '#/components/schemas/WithdrawalIntentBase'
+        - type: object
+          required: [status]
+          properties:
+            status:
+              type: string
+              enum: [LOCKED]
+            tx:
+              type: 'null'
+            failure:
+              type: 'null'
+
+    WithdrawalIntentSending:
+      allOf:
+        - $ref: '#/components/schemas/WithdrawalIntentBase'
+        - type: object
+          required: [status]
+          properties:
+            status:
+              type: string
+              enum: [SENDING]
+            tx:
+              type: 'null'
+            failure:
+              type: 'null'
+
+    WithdrawalIntentSent:
+      allOf:
+        - $ref: '#/components/schemas/WithdrawalIntentBase'
+        - type: object
+          required: [status, tx]
+          properties:
+            status:
+              type: string
+              enum: [SENT]
+            tx:
+              $ref: '#/components/schemas/TxInfo'
+            failure:
+              type: 'null'
+
+    WithdrawalIntentConfirmed:
+      allOf:
+        - $ref: '#/components/schemas/WithdrawalIntentBase'
+        - type: object
+          required: [status, tx]
+          properties:
+            status:
+              type: string
+              enum: [CONFIRMED]
+            tx:
+              $ref: '#/components/schemas/TxInfo'
+            failure:
+              type: 'null'
+
+    WithdrawalIntentCancelled:
+      allOf:
+        - $ref: '#/components/schemas/WithdrawalIntentBase'
+        - type: object
+          required: [status]
+          properties:
+            status:
+              type: string
+              enum: [CANCELLED]
+            tx:
+              type: 'null'
+            failure:
+              type: 'null'
+
+    WithdrawalIntentFailed:
+      allOf:
+        - $ref: '#/components/schemas/WithdrawalIntentBase'
+        - type: object
+          required: [status, failure]
+          properties:
+            status:
+              type: string
+              enum: [FAILED]
+            tx:
+              type: 'null'
+            failure:
+              $ref: '#/components/schemas/Failure'
+
+    WithdrawalIntentResponse:
+      oneOf:
+        - $ref: '#/components/schemas/WithdrawalIntentPending'
+        - $ref: '#/components/schemas/WithdrawalIntentLocked'
+        - $ref: '#/components/schemas/WithdrawalIntentSending'
+        - $ref: '#/components/schemas/WithdrawalIntentSent'
+        - $ref: '#/components/schemas/WithdrawalIntentConfirmed'
+        - $ref: '#/components/schemas/WithdrawalIntentCancelled'
+        - $ref: '#/components/schemas/WithdrawalIntentFailed'
+      discriminator:
+        propertyName: status
+        mapping:
+          PENDING: '#/components/schemas/WithdrawalIntentPending'
+          LOCKED: '#/components/schemas/WithdrawalIntentLocked'
+          SENDING: '#/components/schemas/WithdrawalIntentSending'
+          SENT: '#/components/schemas/WithdrawalIntentSent'
+          CONFIRMED: '#/components/schemas/WithdrawalIntentConfirmed'
+          CANCELLED: '#/components/schemas/WithdrawalIntentCancelled'
+          FAILED: '#/components/schemas/WithdrawalIntentFailed'
