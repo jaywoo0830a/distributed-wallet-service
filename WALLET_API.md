@@ -1,84 +1,91 @@
-# Wallet API
+# WALLET_API.md (Revised to Match `wallet-oas-3.2.0`)
 
 **Polling-Based · Concurrency-Safe · Idempotent · Batch-Oriented Withdrawals**
 
-This document describes a unified **Wallet API** that supports both
-**deposits (incoming payments)** and **withdrawals (outgoing transfers)**.
+This document describes the Wallet API as defined by the OpenAPI bundle under `wallet-oas-3.2.0/`, supporting:
 
-The system is designed to provide strong guarantees against:
+* **Deposits** (incoming funds) via `DepositIntent`
+* **Withdrawals** (outgoing transfers) via `WithdrawalIntent` (**internally batch-executed**)
+
+The API is designed to prevent:
 
 * double processing
 * race conditions
 * duplicate wallet executions
 
-The API is:
+Key characteristics:
 
 * **asset-agnostic**
 * **internally asynchronous**
-* **client-facing polling only**
-* designed for **high-concurrency and batch-oriented environments**
+* **client-facing polling only** (no webhooks)
+* **high-concurrency safe**
+* withdrawals are **batch-oriented** internally
 
 ---
 
-## Core Design Principles
+## 1. Core Design Principles
 
-### 1. Intent-Based Modeling
+### 1) Intent-Based Modeling
 
 All monetary actions are modeled as **Intents**:
 
-* `DepositIntent` — observe and finalize incoming funds
-* `WithdrawalIntent` — reserve funds and later send them out
+* `DepositIntent` — expect and later finalize incoming funds
+* `WithdrawalIntent` — reserve funds now, send later (internally)
 
-An intent represents **a financial decision**, not an immediate wallet or
-blockchain action.
+An intent represents a **decision + lifecycle**, not an immediate blockchain action.
 
 ---
 
-### 2. Polling-Only Client Interaction
+### 2) Polling-Only Client Interaction
 
 Clients:
 
 * never receive webhooks
 * never subscribe to push events
-* **only poll resources via `GET`**
+* **only poll resources using `GET`**
 
-All state changes are observable via resource state.
+State changes are observed via intent resources.
 
 ---
 
-### 3. Explicit Finalization & Safety Boundaries
+### 3) Explicit Finalization & Safety Boundaries
 
-Dangerous operations are separated and guarded by state transitions:
+Dangerous, irreversible actions are separated from safe/repeatable ones.
 
-| Operation         | Safe to repeat | Irreversible |
-| ----------------- | -------------- | ------------ |
-| Observation       | ✅ yes          | ❌ no         |
-| Capture (deposit) | ❌ no           | ✅ yes        |
-| Wallet transfer   | ❌ no           | ✅ yes        |
+| Operation                       | Safe to repeat | Irreversible |
+| ------------------------------- | -------------: | -----------: |
+| Observation / refresh (deposit) |              ✅ |            ❌ |
+| Capture (deposit)               |              ❌ |            ✅ |
+| Wallet transfer (withdrawal)    |              ❌ |            ✅ |
 
-Finalization steps are always:
+Finalization steps are:
 
 * explicit
-* idempotent
-* concurrency-safe
+* idempotent (where applicable)
 * enforced by transactional state transitions
 
 ---
 
-### 4. State Is the Source of Truth
+### 4) State as Primary Signal (with Practical Exceptions)
 
-Errors, progress, delays, and failures are represented as **resource state**,
-never as transport-level errors.
+Where possible, failures and progress appear in **resource state** (`status`, `failure`, `poll_after_ms`).
 
-Clients react to `status`, not HTTP response codes.
+However, the current OpenAPI bundle also uses **transport-level `ApiError` responses** for common API concerns such as:
+
+* authentication (`401`)
+* not found (`404`)
+* idempotency conflict (`409`)
+* insufficient balance on withdrawal reserve (`402`)
+
+This document reflects that reality.
 
 ---
 
-## Common Concepts
+## 2. Common Concepts
 
 ### Reference & Metadata
 
-Both deposit and withdrawal APIs accept:
+Most create requests include:
 
 ```json
 {
@@ -91,212 +98,249 @@ Both deposit and withdrawal APIs accept:
 ```
 
 * `reference.idempotency_key`
-  → prevents duplicate intent creation
+  Prevents duplicate intent creation.
+  Reusing the same key with a **different payload** must yield **409**.
 * `reference.external_ids`
-  → opaque identifiers from upstream systems
+  Opaque upstream identifiers.
 * `metadata`
-  → arbitrary passthrough data, never interpreted by the wallet
+  Arbitrary passthrough data, not interpreted by the wallet.
 
 ---
 
-## Deposit Pipeline
+### Amount Encoding
 
-*(unchanged; omitted here for brevity — semantics remain identical to the
-original document)*
+Amounts are **decimal strings**:
 
----
-
-## Withdrawal Pipeline (Batch-Oriented)
-
-### WithdrawalIntent
-
-A `WithdrawalIntent` represents **a user request to withdraw funds**.
-
-#### Key Characteristics
-
-* Funds are **reserved immediately and atomically**
-* Actual wallet transfer is **asynchronous and batch-based**
-* Each intent is sent **at most once**
-* Clients observe all progress via polling only
+* `AmountString`: `'^[0-9]+(\.[0-9]+)?$'`
+* Examples: `"0.015"`, `"152.34"`
 
 ---
 
-### Balance Model (Recommended)
+### Failure vs ApiError
 
-Balances are logically split:
-
-| Field               | Meaning                        |
-| ------------------- | ------------------------------ |
-| `available_balance` | Can be withdrawn               |
-| `reserved_balance`  | Locked for pending withdrawals |
-
-This avoids ambiguity during retries, failures, or batching delays.
+* `Failure` object appears **inside intent resources** when `status = FAILED`.
+* `ApiError` is used for request/transport semantics (e.g., `401`, `404`, `409`, `402`).
 
 ---
 
-### Batch-Oriented Execution Model (Critical)
+## 3. Deposit Pipeline
 
-Withdrawal intents are **not sent immediately** after creation.
+### 3.1 DepositIntent Lifecycle
 
-Instead:
+A `DepositIntent` represents one expected incoming payment with:
 
-1. Funds are reserved at creation time
-2. The intent is placed into an internal **withdrawal queue**
-3. Intents are **periodically grouped into batches**
-4. Each batch triggers **exactly one wallet execution**
+* one receiving address (provisioned async)
+* one expected amount
+* expiration time
+* multiple observations allowed
+* **exactly one capture** possible
 
-Batch scheduling may be:
+### 3.2 DepositIntent Statuses
 
-* hourly
-* daily
-* or any operator-defined window
+* `CREATED`
+* `ADDRESS_PENDING`
+* `AWAITING_DEPOSIT`
+* `OBSERVED`
+* `ELIGIBLE`
+* `CAPTURE_PENDING`
+* `CAPTURED` (terminal)
+* `EXPIRED`
+* `CANCELLED`
+* `FAILED`
 
-From the client’s perspective, batching is observable only via state and
-metadata.
+**Important:** `ELIGIBLE` is not final. Only `CAPTURED` is final.
+
+### 3.3 Deposit Endpoints
+
+#### Create DepositIntent
+
+`POST /v1/deposit-intents`
+
+* Creates intent with expected amount and expiry.
+* Address provisioning is asynchronous.
+
+#### Get DepositIntent (Polling)
+
+`GET /v1/deposit-intents/{id}`
+
+* Returns current state and server polling hint `poll_after_ms`.
+
+#### Refresh Observation (Safe)
+
+`POST /v1/deposit-intents/{id}/refresh`
+
+* Queues a new observation job.
+* Safe to call repeatedly.
+
+#### Capture Deposit (Critical)
+
+`POST /v1/deposit-intents/{id}/capture`
+
+* Finalizes the deposit **exactly once** per intent.
+* Uses a dedicated capture idempotency key (`CaptureDepositIntentRequest.idempotency_key`).
+* Upstream systems must proceed only after `CAPTURED`.
 
 ---
 
-### WithdrawalIntent States
+## 4. Withdrawal Pipeline (Batch-Oriented)
 
-| Status      | Meaning                                            |
-| ----------- | -------------------------------------------------- |
-| `PENDING`   | Funds reserved, waiting for batch assignment       |
-| `LOCKED`    | Assigned to a batch (irreversible safety boundary) |
-| `SENDING`   | Wallet transfer in progress                        |
-| `SENT`      | Wallet returned txid                               |
-| `CONFIRMED` | On-chain confirmed (optional)                      |
-| `FAILED`    | Irrecoverable failure                              |
-| `CANCELLED` | Cancelled before batch assignment                  |
+### 4.1 WithdrawalIntent: “Reserve now, send later”
 
-> **`PENDING → LOCKED` is an irreversible boundary**
-> After `LOCKED`, the intent must never be cancelled or reassigned.
+A `WithdrawalIntent` represents a user request to withdraw funds.
 
----
+Key properties (as implemented):
 
-### Scheduling Metadata (Client-Visible)
+* Funds are **reserved immediately and atomically** on creation.
+* Actual wallet transfer is **asynchronous** and **usually executed via internal batching**.
+* Each withdrawal is sent **at-most-once**.
+* Clients observe state via polling.
 
-A `WithdrawalIntent` MAY expose the following fields:
+### 4.2 WithdrawalIntent Statuses
+
+* `PENDING` — reserved, waiting for batch assignment
+* `LOCKED` — assigned to a batch (**irreversible boundary**)
+* `SENDING` — wallet call in progress
+* `SENT` — txid obtained
+* `CONFIRMED` — on-chain confirmed (optional)
+* `FAILED` — irrecoverable failure (resource includes `failure`)
+* `CANCELLED` — cancelled before batch assignment
+
+**Safety boundary:** `PENDING → LOCKED` is irreversible.
+After `LOCKED`, the intent must never be cancelled or reassigned.
+
+### 4.3 Client-visible batching information
+
+The current `WithdrawalIntentBase` includes optional debug-only batching info:
 
 ```json
 {
-  "scheduled_for": "2026-01-24T13:00:00Z",
-  "batch_window": "HOURLY",
-  "next_batch_at": "2026-01-24T13:00:00Z",
-  "cancelable_until": "2026-01-24T12:59:59Z"
+  "debug": {
+    "batch_id": "string-or-null",
+    "batch_status": "CREATED|SENDING|SENT|UNKNOWN|FAILED"
+  }
 }
 ```
 
-* `scheduled_for`
-  → earliest time the intent is eligible for batching
-* `batch_window`
-  → batching strategy (`HOURLY`, `DAILY`, etc.)
-* `next_batch_at`
-  → server-estimated execution time
-* `cancelable_until`
-  → last moment cancellation is allowed (`PENDING` only)
+* `debug` is optional and intended for troubleshooting.
+* There are **no standardized scheduling fields** (e.g., `scheduled_for`) in the current schema.
 
-These fields are informational and do not affect correctness.
+### 4.4 Withdrawal Endpoints
 
----
-
-### Withdrawal Endpoints
-
-#### Create WithdrawalIntent
+#### Create WithdrawalIntent (Reserve funds)
 
 `POST /v1/withdrawal-intents`
 
-* reserves funds atomically
-* idempotent by `reference.idempotency_key`
-* does **not** trigger immediate wallet transfer
+* Auth: user identity comes from bearer token (no `user_id` in body).
+* Idempotency: `reference.idempotency_key` prevents duplicate creation.
+
+  * Same key + different payload → **409**
+* Responses (as defined):
+
+  * `201` → returns `WithdrawalIntentResponse`
+  * `400` → `ApiError` invalid request
+  * `401` → `ApiError` unauthorized
+  * `402` → `ApiError` insufficient balance / not reservable
+  * `409` → `ApiError` idempotency conflict
 
 #### Get WithdrawalIntent (Polling)
 
 `GET /v1/withdrawal-intents/{id}`
 
-Returns current state, including batching-related metadata.
+* Responses:
 
-#### Cancel WithdrawalIntent
+  * `200` → `WithdrawalIntentResponse`
+  * `401` → `ApiError`
+  * `404` → `ApiError`
+
+#### Cancel WithdrawalIntent (PENDING only)
 
 `POST /v1/withdrawal-intents/{id}/cancel`
 
-Allowed **only** while `status = PENDING`.
+* Only allowed while `status = PENDING`.
+* Reserved funds are released.
+* Responses:
+
+  * `200` → `WithdrawalIntentResponse` (typically `CANCELLED`)
+  * `401` → `ApiError`
+  * `404` → `ApiError`
+  * `409` → `ApiError` cannot cancel (not `PENDING`)
 
 ---
 
-## Internal: WithdrawalBatch (Non-Public)
+## 5. Internal: WithdrawalBatch (Non-Public)
 
-Withdrawals are executed via **internal batches**.
+Withdrawals are executed via internal batches to guarantee at-most-once sending.
 
-### WithdrawalBatch States
+### 5.1 WithdrawalBatch Statuses
 
-| Status    | Meaning                      |
-| --------- | ---------------------------- |
-| `CREATED` | Batch formed, intents locked |
-| `SENDING` | Wallet call in progress      |
-| `SENT`    | Wallet returned txid         |
-| `UNKNOWN` | Wallet outcome unclear       |
-| `FAILED`  | Definitive failure           |
+* `CREATED` — formed, intents locked
+* `SENDING` — wallet call in progress
+* `SENT` — txid obtained
+* `UNKNOWN` — outcome unclear (requires reconciliation)
+* `FAILED` — definitive failure
 
----
-
-### Batch Invariants (Critical)
+### 5.2 Invariants
 
 * One intent → one batch only
 * One batch → one wallet execution only
-* Wallet calls must be idempotent or externally reconcilable
-* Batches must use **deterministic idempotency keys**
-* Uncertainty is isolated (`UNKNOWN` + reconciliation)
+* `PENDING` intents are claimed using row locking (e.g., `FOR UPDATE SKIP LOCKED`)
+* Wallet uncertainty is isolated via `UNKNOWN` and reconciliation
+* Worst-case is **delay**, not duplication
 
 ---
 
-## Concurrency & Idempotency Guarantees
+## 6. Polling Contract
 
-### Withdrawal
+All intent responses include:
 
-* Balance reservation is atomic
-* `PENDING` intents are claimed using
-  `FOR UPDATE SKIP LOCKED`
-* Batch assignment transitions intents to `LOCKED`
-* Wallet execution happens **once per batch**
-* Worst-case outcome is delay, never duplication
+* `poll_after_ms` (server-suggested delay)
 
----
+Clients should:
 
-## Error Representation
+* poll `GET` until terminal outcomes are observed:
 
-Errors are represented as part of resource state:
-
-```json
-{
-  "id": "intent_id",
-  "status": "FAILED",
-  "failure": {
-    "code": "WALLET_TIMEOUT",
-    "message": "Wallet provider did not respond",
-    "retryable": false
-  },
-  "poll_after_ms": 5000
-}
-```
-
-Clients **continue polling** regardless of errors.
+  * Deposit: `CAPTURED` (or `EXPIRED/CANCELLED/FAILED`)
+  * Withdrawal: `SENT/CONFIRMED` (or `CANCELLED/FAILED`)
 
 ---
 
-## Integration Rules (Critical)
+## 7. Integration Rules (Critical)
 
-* Never assume immediate withdrawal execution
-* Never retry wallet transfers manually
-* Never reassign `LOCKED` withdrawal intents
-* Treat wallet operations as irreversible
-* Delays are acceptable; duplication is not
+* Never treat deposit `ELIGIBLE` as finalized; proceed only after `CAPTURED`.
+* Never assume withdrawals are sent immediately after creation.
+* Never manually retry wallet transfers.
+* Never reassign or cancel intents after `LOCKED`.
+* Prefer waiting/polling over “creative retries”.
 
 ---
 
-## Summary
+## 8. Supporting Endpoints
 
-* Deposits and withdrawals share an intent-based model
-* Withdrawals are **reserved immediately, executed in batches**
-* Clients observe state via polling only
-* Safety boundaries are explicit and enforced
-* Correctness is always prioritized over speed
+### Wallet Balance Snapshot
+
+`GET /v1/wallet-balance`
+
+Returns `WalletBalanceResponse` with statuses:
+
+* `OK`, `LOW`, `STALE`, `UNAVAILABLE`, `FAILED`
+
+### Address Validations
+
+`POST /v1/address-validations`
+
+Returns `AddressValidationResponse` with statuses:
+
+* `VALID`, `INVALID`, `UNKNOWN`, `UNAVAILABLE`
+
+---
+
+## 9. Summary
+
+* Intent-based API with strict safety boundaries
+* Clients poll only; server handles concurrency and async work
+* Deposits: observe → eligible → capture exactly once
+* Withdrawals: reserve immediately → batch internally → send at-most-once
+* Errors appear either as:
+
+  * intent `failure` (resource-state), or
+  * `ApiError` (transport-level) for auth/conflicts/insufficient funds
