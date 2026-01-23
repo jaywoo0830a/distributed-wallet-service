@@ -249,6 +249,7 @@ DepositIntentBase:
   additionalProperties: false
   required:
     - id
+    - status
     - asset
     - network
     - expected_amount
@@ -260,6 +261,8 @@ DepositIntentBase:
   properties:
     id:
       type: string
+    status:
+      $ref: '#/DepositIntentStatus'
     asset:
       $ref: '#/Asset'
     network:
@@ -291,7 +294,7 @@ DepositIntentCreated:
   allOf:
     - $ref: '#/DepositIntentBase'
     - type: object
-      required: [status, address]
+      required: [address]
       properties:
         status:
           type: string
@@ -309,7 +312,7 @@ DepositIntentAddressPending:
   allOf:
     - $ref: '#/DepositIntentBase'
     - type: object
-      required: [status, address]
+      required: [address]
       properties:
         status:
           type: string
@@ -327,7 +330,7 @@ DepositIntentAwaitingDeposit:
   allOf:
     - $ref: '#/DepositIntentBase'
     - type: object
-      required: [status, address]
+      required: [address]
       properties:
         status:
           type: string
@@ -345,7 +348,7 @@ DepositIntentObserved:
   allOf:
     - $ref: '#/DepositIntentBase'
     - type: object
-      required: [status, address, eligibility]
+      required: [address, eligibility]
       properties:
         status:
           type: string
@@ -363,7 +366,7 @@ DepositIntentEligible:
   allOf:
     - $ref: '#/DepositIntentBase'
     - type: object
-      required: [status, address, eligibility]
+      required: [address, eligibility]
       properties:
         status:
           type: string
@@ -381,7 +384,7 @@ DepositIntentCapturePending:
   allOf:
     - $ref: '#/DepositIntentBase'
     - type: object
-      required: [status, address, eligibility]
+      required: [address, eligibility]
       properties:
         status:
           type: string
@@ -399,7 +402,7 @@ DepositIntentCaptured:
   allOf:
     - $ref: '#/DepositIntentBase'
     - type: object
-      required: [status, address, capture]
+      required: [address, capture]
       properties:
         status:
           type: string
@@ -417,7 +420,6 @@ DepositIntentExpired:
   allOf:
     - $ref: '#/DepositIntentBase'
     - type: object
-      required: [status]
       properties:
         status:
           type: string
@@ -437,7 +439,6 @@ DepositIntentCancelled:
   allOf:
     - $ref: '#/DepositIntentBase'
     - type: object
-      required: [status]
       properties:
         status:
           type: string
@@ -457,7 +458,7 @@ DepositIntentFailed:
   allOf:
     - $ref: '#/DepositIntentBase'
     - type: object
-      required: [status, failure]
+      required: [failure]
       properties:
         status:
           type: string
@@ -523,6 +524,7 @@ WithdrawalIntentBase:
   additionalProperties: false
   required:
     - id
+    - status
     - asset
     - network
     - amount
@@ -533,6 +535,8 @@ WithdrawalIntentBase:
   properties:
     id:
       type: string
+    status:
+      $ref: '#/WithdrawalIntentStatus'
     asset:
       $ref: '#/Asset'
     network:
@@ -556,7 +560,6 @@ WithdrawalIntentPending:
   allOf:
     - $ref: '#/WithdrawalIntentBase'
     - type: object
-      required: [status]
       properties:
         status:
           type: string
@@ -570,7 +573,6 @@ WithdrawalIntentLocked:
   allOf:
     - $ref: '#/WithdrawalIntentBase'
     - type: object
-      required: [status]
       properties:
         status:
           type: string
@@ -584,7 +586,6 @@ WithdrawalIntentSending:
   allOf:
     - $ref: '#/WithdrawalIntentBase'
     - type: object
-      required: [status]
       properties:
         status:
           type: string
@@ -598,7 +599,7 @@ WithdrawalIntentSent:
   allOf:
     - $ref: '#/WithdrawalIntentBase'
     - type: object
-      required: [status, tx]
+      required: [tx]
       properties:
         status:
           type: string
@@ -612,7 +613,7 @@ WithdrawalIntentConfirmed:
   allOf:
     - $ref: '#/WithdrawalIntentBase'
     - type: object
-      required: [status, tx]
+      required: [tx]
       properties:
         status:
           type: string
@@ -626,7 +627,6 @@ WithdrawalIntentCancelled:
   allOf:
     - $ref: '#/WithdrawalIntentBase'
     - type: object
-      required: [status]
       properties:
         status:
           type: string
@@ -640,7 +640,7 @@ WithdrawalIntentFailed:
   allOf:
     - $ref: '#/WithdrawalIntentBase'
     - type: object
-      required: [status, failure]
+      required: [failure]
       properties:
         status:
           type: string
@@ -673,6 +673,7 @@ WithdrawalIntentResponse:
 # -------------------------
 # Wallet Balance
 # -------------------------
+
 WalletBalanceStatus:
   type: string
   enum: [OK, LOW, STALE, UNAVAILABLE, FAILED]
@@ -705,7 +706,7 @@ WalletBalanceOk:
   allOf:
     - $ref: '#/WalletBalanceBase'
     - type: object
-      required: [status, total, spendable]
+      required: [total, spendable]
       properties:
         status:
           type: string
@@ -742,7 +743,7 @@ WalletBalanceUnavailable:
   allOf:
     - $ref: '#/WalletBalanceBase'
     - type: object
-      required: [status, failure]
+      required: [failure]
       properties:
         status:
           type: string
@@ -782,6 +783,7 @@ WalletBalanceResponse:
 # -------------------------
 # Address Validation
 # -------------------------
+
 AddressValidationStatus:
   type: string
   enum: [VALID, INVALID, UNKNOWN, UNAVAILABLE]
@@ -828,7 +830,7 @@ AddressValidationValid:
   allOf:
     - $ref: '#/AddressValidationBase'
     - type: object
-      required: [status, is_valid]
+      required: [is_valid]
       properties:
         status:
           type: string
@@ -853,7 +855,7 @@ AddressValidationInvalid:
   allOf:
     - $ref: '#/AddressValidationBase'
     - type: object
-      required: [status, is_valid, reasons]
+      required: [is_valid, reasons]
       properties:
         status:
           type: string
@@ -875,7 +877,7 @@ AddressValidationUnknown:
   allOf:
     - $ref: '#/AddressValidationBase'
     - type: object
-      required: [status, is_valid, failure]
+      required: [failure]
       properties:
         status:
           type: string

@@ -1,6 +1,7 @@
 openapi: 3.2.0
 $self: https://api.example.com/openapi/wallet.yaml
-jsonSchemaDialect: https://spec.openapis.org/oas/3.1/dialect/base
+jsonSchemaDialect: https://spec.openapis.org/oas/3.2/dialect/2025-09-17
+
 info:
   title: Wallet API
   version: 1.1.0
@@ -13,7 +14,9 @@ info:
     - Critical actions are explicit and at-most-once:
       - Deposit capture: exactly once per DepositIntent.
       - Withdrawal sending: at-most-once per WithdrawalIntent via internal batching.
-    - Errors are expressed as resource state (failure object), not transport errors.
+    - Errors are expressed either as:
+      - resource state (failure object) for intent lifecycle failures, or
+      - ApiError for request/transport errors (auth, not-found, idempotency conflict, insufficient funds).
     - Response schemas are strongly typed by status using oneOf + discriminator to prevent client mistakes.
 
 servers:
