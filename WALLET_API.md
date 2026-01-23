@@ -1,13 +1,15 @@
-# WALLET_API.md (Revised to Match `wallet-oas-3.2.0`)
+# WALLET_API.md (Aligned with `wallet-oas-3.2.0`)
 
 **Polling-Based · Concurrency-Safe · Idempotent · Batch-Oriented Withdrawals**
 
-This document describes the Wallet API as defined by the OpenAPI bundle under `wallet-oas-3.2.0/`, supporting:
+This document describes the Wallet API as defined by the OpenAPI bundle under `wallet-oas-3.2.0/`.
+
+It supports:
 
 * **Deposits** (incoming funds) via `DepositIntent`
 * **Withdrawals** (outgoing transfers) via `WithdrawalIntent` (**internally batch-executed**)
 
-The API is designed to prevent:
+The system is designed to prevent:
 
 * double processing
 * race conditions
@@ -19,13 +21,13 @@ Key characteristics:
 * **internally asynchronous**
 * **client-facing polling only** (no webhooks)
 * **high-concurrency safe**
-* withdrawals are **batch-oriented** internally
+* withdrawals are **batch-oriented internally**
 
 ---
 
 ## 1. Core Design Principles
 
-### 1) Intent-Based Modeling
+### 1.1 Intent-Based Modeling
 
 All monetary actions are modeled as **Intents**:
 
@@ -36,7 +38,7 @@ An intent represents a **decision + lifecycle**, not an immediate blockchain act
 
 ---
 
-### 2) Polling-Only Client Interaction
+### 1.2 Polling-Only Client Interaction
 
 Clients:
 
@@ -44,13 +46,13 @@ Clients:
 * never subscribe to push events
 * **only poll resources using `GET`**
 
-State changes are observed via intent resources.
+All state changes are observed via intent resources.
 
 ---
 
-### 3) Explicit Finalization & Safety Boundaries
+### 1.3 Explicit Finalization & Safety Boundaries
 
-Dangerous, irreversible actions are separated from safe/repeatable ones.
+Irreversible operations are separated from safe/repeatable ones:
 
 | Operation                       | Safe to repeat | Irreversible |
 | ------------------------------- | -------------: | -----------: |
@@ -58,32 +60,41 @@ Dangerous, irreversible actions are separated from safe/repeatable ones.
 | Capture (deposit)               |              ❌ |            ✅ |
 | Wallet transfer (withdrawal)    |              ❌ |            ✅ |
 
-Finalization steps are:
+Finalization is always:
 
 * explicit
-* idempotent (where applicable)
+* concurrency-safe
 * enforced by transactional state transitions
+* idempotent where applicable (see endpoint semantics)
 
 ---
 
-### 4) State as Primary Signal (with Practical Exceptions)
+### 1.4 State as Primary Signal (with Defined Exceptions)
 
-Where possible, failures and progress appear in **resource state** (`status`, `failure`, `poll_after_ms`).
+Where possible, progress and failures are expressed as **resource state**:
 
-However, the current OpenAPI bundle also uses **transport-level `ApiError` responses** for common API concerns such as:
+* `status`
+* `failure` (when terminal failure is reached)
+* `poll_after_ms` (server-suggested polling interval)
+
+However, the current OpenAPI bundle also uses **transport-level `ApiError` responses** for request-level concerns:
 
 * authentication (`401`)
 * not found (`404`)
 * idempotency conflict (`409`)
-* insufficient balance on withdrawal reserve (`402`)
+* insufficient balance for withdrawal reservation (`402`)
+* invalid request payload (`400`)
 
-This document reflects that reality.
+Clients must handle both:
+
+* **resource-state failures** (`status = FAILED` with `failure`)
+* **request/transport errors** (`ApiError`)
 
 ---
 
 ## 2. Common Concepts
 
-### Reference & Metadata
+### 2.1 Reference & Metadata
 
 Most create requests include:
 
@@ -103,11 +114,11 @@ Most create requests include:
 * `reference.external_ids`
   Opaque upstream identifiers.
 * `metadata`
-  Arbitrary passthrough data, not interpreted by the wallet.
+  Arbitrary passthrough data, never interpreted by the wallet.
 
 ---
 
-### Amount Encoding
+### 2.2 Amount Encoding
 
 Amounts are **decimal strings**:
 
@@ -116,10 +127,10 @@ Amounts are **decimal strings**:
 
 ---
 
-### Failure vs ApiError
+### 2.3 Failure vs ApiError
 
-* `Failure` object appears **inside intent resources** when `status = FAILED`.
-* `ApiError` is used for request/transport semantics (e.g., `401`, `404`, `409`, `402`).
+* `Failure` appears **inside intent resources** when `status = FAILED`.
+* `ApiError` is used for **request/transport semantics** (e.g., `401`, `404`, `409`, `402`, `400`).
 
 ---
 
@@ -129,11 +140,13 @@ Amounts are **decimal strings**:
 
 A `DepositIntent` represents one expected incoming payment with:
 
-* one receiving address (provisioned async)
+* one receiving address (provisioned asynchronously)
 * one expected amount
-* expiration time
+* an expiration time
 * multiple observations allowed
 * **exactly one capture** possible
+
+---
 
 ### 3.2 DepositIntent Statuses
 
@@ -149,6 +162,8 @@ A `DepositIntent` represents one expected incoming payment with:
 * `FAILED`
 
 **Important:** `ELIGIBLE` is not final. Only `CAPTURED` is final.
+
+---
 
 ### 3.3 Deposit Endpoints
 
@@ -184,7 +199,7 @@ A `DepositIntent` represents one expected incoming payment with:
 
 ## 4. Withdrawal Pipeline (Batch-Oriented)
 
-### 4.1 WithdrawalIntent: “Reserve now, send later”
+### 4.1 WithdrawalIntent: Reserve Now, Send Later
 
 A `WithdrawalIntent` represents a user request to withdraw funds.
 
@@ -194,6 +209,8 @@ Key properties (as implemented):
 * Actual wallet transfer is **asynchronous** and **usually executed via internal batching**.
 * Each withdrawal is sent **at-most-once**.
 * Clients observe state via polling.
+
+---
 
 ### 4.2 WithdrawalIntent Statuses
 
@@ -208,7 +225,9 @@ Key properties (as implemented):
 **Safety boundary:** `PENDING → LOCKED` is irreversible.
 After `LOCKED`, the intent must never be cancelled or reassigned.
 
-### 4.3 Client-visible batching information
+---
+
+### 4.3 Client-Visible Batching Information
 
 The current `WithdrawalIntentBase` includes optional debug-only batching info:
 
@@ -224,9 +243,11 @@ The current `WithdrawalIntentBase` includes optional debug-only batching info:
 * `debug` is optional and intended for troubleshooting.
 * There are **no standardized scheduling fields** (e.g., `scheduled_for`) in the current schema.
 
+---
+
 ### 4.4 Withdrawal Endpoints
 
-#### Create WithdrawalIntent (Reserve funds)
+#### Create WithdrawalIntent (Reserve Funds)
 
 `POST /v1/withdrawal-intents`
 
@@ -234,36 +255,38 @@ The current `WithdrawalIntentBase` includes optional debug-only batching info:
 * Idempotency: `reference.idempotency_key` prevents duplicate creation.
 
   * Same key + different payload → **409**
-* Responses (as defined):
 
-  * `201` → returns `WithdrawalIntentResponse`
-  * `400` → `ApiError` invalid request
-  * `401` → `ApiError` unauthorized
-  * `402` → `ApiError` insufficient balance / not reservable
-  * `409` → `ApiError` idempotency conflict
+Responses (as defined):
+
+* `201` → `WithdrawalIntentResponse`
+* `400` → `ApiError` (invalid request)
+* `401` → `ApiError` (unauthorized)
+* `402` → `ApiError` (insufficient balance / not reservable)
+* `409` → `ApiError` (idempotency conflict)
 
 #### Get WithdrawalIntent (Polling)
 
 `GET /v1/withdrawal-intents/{id}`
 
-* Responses:
+Responses:
 
-  * `200` → `WithdrawalIntentResponse`
-  * `401` → `ApiError`
-  * `404` → `ApiError`
+* `200` → `WithdrawalIntentResponse`
+* `401` → `ApiError`
+* `404` → `ApiError`
 
-#### Cancel WithdrawalIntent (PENDING only)
+#### Cancel WithdrawalIntent (PENDING Only)
 
 `POST /v1/withdrawal-intents/{id}/cancel`
 
-* Only allowed while `status = PENDING`.
+* Allowed only while `status = PENDING`.
 * Reserved funds are released.
-* Responses:
 
-  * `200` → `WithdrawalIntentResponse` (typically `CANCELLED`)
-  * `401` → `ApiError`
-  * `404` → `ApiError`
-  * `409` → `ApiError` cannot cancel (not `PENDING`)
+Responses:
+
+* `200` → `WithdrawalIntentResponse` (typically `CANCELLED`)
+* `401` → `ApiError`
+* `404` → `ApiError`
+* `409` → `ApiError` (cannot cancel when not `PENDING`)
 
 ---
 
@@ -278,6 +301,8 @@ Withdrawals are executed via internal batches to guarantee at-most-once sending.
 * `SENT` — txid obtained
 * `UNKNOWN` — outcome unclear (requires reconciliation)
 * `FAILED` — definitive failure
+
+---
 
 ### 5.2 Invariants
 
@@ -310,7 +335,7 @@ Clients should:
 * Never assume withdrawals are sent immediately after creation.
 * Never manually retry wallet transfers.
 * Never reassign or cancel intents after `LOCKED`.
-* Prefer waiting/polling over “creative retries”.
+* Prefer waiting/polling over speculative retries.
 
 ---
 
@@ -343,4 +368,4 @@ Returns `AddressValidationResponse` with statuses:
 * Errors appear either as:
 
   * intent `failure` (resource-state), or
-  * `ApiError` (transport-level) for auth/conflicts/insufficient funds
+  * `ApiError` (transport-level) for auth/conflicts/insufficient funds/invalid requests
