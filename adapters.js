@@ -9,7 +9,7 @@ import { v4 as uuidv4 } from "uuid";
  *
  * createAddress(asset, network): Promise<string>
  * sendBatch(withdrawals, asset, network): Promise<string> (returns txid)
- * getBalance(asset, network): Promise<{ total: string, spendable: string }>
+ * getBalance(asset, network): Promise<{ total: string, spendable: string, locked: string, lock_reason: string }>
  */
 
 /**
@@ -38,7 +38,6 @@ export class BitcoinWalletAdapter {
             username: this.rpcUser,
             password: this.rpcPass,
           },
-          // Keep-Alive connection recommended for frequent RPC calls
           headers: { Connection: "keep-alive" },
         },
       );
@@ -50,7 +49,6 @@ export class BitcoinWalletAdapter {
       }
       return response.data.result;
     } catch (error) {
-      // Axios error handling details
       const msg = error.response?.data?.error?.message || error.message;
       console.error(`Bitcoin RPC Error [${method}]:`, msg);
       throw new Error(`Bitcoin RPC Failed: ${msg}`);
@@ -59,8 +57,6 @@ export class BitcoinWalletAdapter {
 
   async createAddress(asset, network) {
     // getnewaddress [label] [address_type]
-    // label: "" (empty default), address_type: "bech32" (SegWit native)
-    // Ref: https://developer.bitcoin.org/reference/rpc/getnewaddress.html
     const address = await this._callRpc("getnewaddress", [
       "wallet-service-deposit",
       "bech32",
@@ -69,10 +65,7 @@ export class BitcoinWalletAdapter {
   }
 
   async sendBatch(withdrawals, asset, network) {
-    // sendmany "" {"address": amount} [minconf] [comment] [subtractfeefrom]
-    // Ref: https://developer.bitcoin.org/reference/rpc/sendmany.html
-
-    // 1. Aggregate amounts by destination address (Bitcoin sendmany requires unique keys)
+    // sendmany
     const outputs = {};
     for (const w of withdrawals) {
       const amount = new Decimal(w.amount);
@@ -82,12 +75,7 @@ export class BitcoinWalletAdapter {
         outputs[w.to] = amount.toNumber();
       }
     }
-
-    // 2. Call sendmany
-    // arg0: "" (dummy, legacy account name)
-    // arg1: outputs object
-    // arg2: 6 (minconf - only use funds confirmed by 6 blocks for safety)
-    // arg3: "batch withdrawal" (comment)
+    // minconf=6 for safety
     return await this._callRpc("sendmany", [
       "",
       outputs,
@@ -97,19 +85,26 @@ export class BitcoinWalletAdapter {
   }
 
   async getBalance(asset, network) {
-    // getbalance "*" [minconf] [include_watchonly]
-    // Ref: https://developer.bitcoin.org/reference/rpc/getbalance.html
+    // getbalance "*" [minconf]
+    // Bitcoin treats minconf=0 as total (including mempool)
+    // We treat minconf=1 as spendable (confirmed)
 
-    // We use minconf=1 for spendable balance to allow fast movement,
-    // but minconf=6 is safer for 'total' confirmed.
-    // For simplicity, we treat minconf=1 as spendable.
+    // Note: 'getbalance' with minconf=0 might include unconfirmed change from our own txs,
+    // which is spendable in Bitcoin, but 'unconfirmed' from others is not safely spendable.
+    // For safety in this service, we stick to confirmed=spendable.
 
-    const unconfirmed = await this._callRpc("getbalance", ["*", 0]);
-    const confirmed = await this._callRpc("getbalance", ["*", 1]);
+    const unconfirmedTotal = await this._callRpc("getbalance", ["*", 0]);
+    const confirmedTotal = await this._callRpc("getbalance", ["*", 1]);
+
+    const total = new Decimal(unconfirmedTotal);
+    const spendable = new Decimal(confirmedTotal);
+    const locked = total.minus(spendable);
 
     return {
-      total: new Decimal(unconfirmed).toFixed(8),
-      spendable: new Decimal(confirmed).toFixed(8),
+      total: total.toFixed(8),
+      spendable: spendable.toFixed(8),
+      locked: locked.toFixed(8),
+      lock_reason: locked.gt(0) ? "unconfirmed" : null,
     };
   }
 }
@@ -158,54 +153,47 @@ export class MoneroWalletAdapter {
   }
 
   async createAddress(asset, network) {
-    // create_address
-    // Create a new subaddress for account 0.
-    // Ref: https://docs.getmonero.org/rpc-library/wallet-rpc/#create_address
     const result = await this._callRpc("create_address", {
       account_index: 0,
-      label: `deposit-${uuidv4()}`, // Unique label for tracking
+      label: `deposit-${uuidv4()}`,
     });
     return result.address;
   }
 
   async sendBatch(withdrawals, asset, network) {
-    // transfer_split
-    // Sends funds to multiple destinations, splitting into multiple txs if necessary.
-    // Ref: https://docs.getmonero.org/rpc-library/wallet-rpc/#transfer_split
-
-    // Convert amounts to atomic units (1 XMR = 1e12 atomic units)
     const destinations = withdrawals.map((w) => ({
-      amount: new Decimal(w.amount).times(1e12).toNumber(), // must be integer
+      amount: new Decimal(w.amount).times(1e12).toNumber(),
       address: w.to,
     }));
 
     const result = await this._callRpc("transfer_split", {
       destinations,
       account_index: 0,
-      priority: 2, // 0: default, 1: unimportant, 2: normal, 3: elevated
-      ring_size: 16, // Enforce ring size (current protocol standard)
+      priority: 2,
+      ring_size: 16,
       get_tx_keys: true,
     });
 
-    // transfer_split returns `tx_hash_list`. We return the first one as a reference
-    // or join them if multiple txs were created.
     if (result.tx_hash_list && result.tx_hash_list.length > 0) {
       return result.tx_hash_list.join(",");
     }
-    // Fallback if older version or single hash returned in strictly 'transfer'
     return result.tx_hash || "unknown_tx_hash";
   }
 
   async getBalance(asset, network) {
     // get_balance
-    // Ref: https://docs.getmonero.org/rpc-library/wallet-rpc/#get_balance
     const result = await this._callRpc("get_balance", { account_index: 0 });
 
-    // result.balance: Total balance (atomic units)
-    // result.unlocked_balance: Spendable balance (atomic units)
+    // Convert from atomic units
+    const total = new Decimal(result.balance).div(1e12);
+    const spendable = new Decimal(result.unlocked_balance).div(1e12);
+    const locked = total.minus(spendable);
+
     return {
-      total: new Decimal(result.balance).div(1e12).toFixed(12),
-      spendable: new Decimal(result.unlocked_balance).div(1e12).toFixed(12),
+      total: total.toFixed(12),
+      spendable: spendable.toFixed(12),
+      locked: locked.toFixed(12),
+      lock_reason: locked.gt(0) ? "protocol_lock" : null, // Monero locks funds for ~20 mins (10 blocks)
     };
   }
 }
@@ -222,13 +210,18 @@ export class MockWalletAdapter {
     console.log(
       `[Adapter] Processing batch of ${withdrawals.length} items for ${asset}/${network}...`,
     );
-    await new Promise((r) => setTimeout(r, 1000)); // Simulate latency
+    await new Promise((r) => setTimeout(r, 1000));
     return `tx_${uuidv4()}`;
   }
 
   async getBalance(asset, network) {
-    // Mocking balance. In reality, this would fetch from chain/node.
-    return { total: "50000.00", spendable: "45000.00" };
+    // Simulate a scenario where some funds are locked
+    return {
+      total: "50000.00",
+      spendable: "45000.00",
+      locked: "5000.00",
+      lock_reason: "simulated_lock",
+    };
   }
 }
 

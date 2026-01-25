@@ -87,13 +87,14 @@ const startWorkers = () => {
     { connection: redisConnection },
   );
 
-  // Worker 2: Withdrawal Batch Processing (Modified for Dynamic Balance Check)
+  // Worker 2: Withdrawal Batch Processing
   new Worker(
     "withdrawal-batching",
     async (job) => {
       const { asset, network } = job.data;
 
       // [Dynamic Check] Fetch real-time balance before processing
+      // We specifically use 'spendable' balance here for actual on-chain transfers.
       let spendableBalance;
       try {
         const balanceData = await walletAdapter.getBalance(asset, network);
@@ -112,7 +113,6 @@ const startWorkers = () => {
 
       try {
         // [FIFO] Fetch pending intents strictly ordered by creation time
-        // Locking ensures no other worker picks these up
         const pending = await queryRunner.manager.find(WithdrawalIntentSchema, {
           where: { status: "PENDING", asset, network },
           order: { createdAt: "ASC" },
@@ -124,14 +124,13 @@ const startWorkers = () => {
           return;
         }
 
-        // [Selection Logic] Select intents that fit within the spendable balance
+        // [Selection Logic] Select intents that fit within the 'spendable' balance
         const selectedIntents = [];
         let currentBatchTotal = new Decimal(0);
 
         for (const intent of pending) {
           const intentAmount = new Decimal(intent.amount);
 
-          // Check if adding this intent exceeds the spendable balance
           if (
             currentBatchTotal
               .plus(intentAmount)
@@ -140,9 +139,9 @@ const startWorkers = () => {
             currentBatchTotal = currentBatchTotal.plus(intentAmount);
             selectedIntents.push(intent);
           } else {
-            // Stop selection to preserve FIFO order (avoid starvation of large txs)
+            // Stop selection. The intent remains PENDING until funds unlock.
             console.log(
-              `[Worker] Insufficient balance for remaining intents. Stopping selection. (Need: ${intentAmount.toFixed()}, Available: ${spendableBalance
+              `[Worker] Low spendable balance. Stopping selection. (Need: ${intentAmount.toFixed()}, Spendable Left: ${spendableBalance
                 .minus(currentBatchTotal)
                 .toFixed()})`,
             );
@@ -150,30 +149,28 @@ const startWorkers = () => {
           }
         }
 
-        // If no intents could be selected (e.g., first intent is too large), rollback and wait
         if (selectedIntents.length === 0) {
           await queryRunner.rollbackTransaction();
           return;
         }
 
-        // Create Batch Record for the selected intents
+        // Create Batch Record
         const batchRepo = queryRunner.manager.getRepository(
           WithdrawalBatchSchema,
         );
         const batch = batchRepo.create({ status: "CREATED", asset, network });
         const savedBatch = await batchRepo.save(batch);
 
-        // Lock selected intents to this batch
+        // Lock selected intents
         for (const item of selectedIntents) {
           item.status = "LOCKED";
           item.batchId = savedBatch.id;
           await queryRunner.manager.save(WithdrawalIntentSchema, item);
         }
 
-        // Commit transaction (Others remain PENDING)
         await queryRunner.commitTransaction();
 
-        // Execute Wallet Transfer (Broadcast)
+        // Execute Wallet Transfer
         try {
           await AppDataSource.getRepository(WithdrawalBatchSchema).update(
             savedBatch.id,
@@ -208,7 +205,6 @@ const startWorkers = () => {
             savedBatch.id,
             { status: "FAILED" },
           );
-          // Intents remain LOCKED/FAILED requiring manual intervention or retry logic
         }
       } catch (err) {
         if (queryRunner.isTransactionActive)
@@ -242,7 +238,6 @@ app.post("/v1/deposit-intents", validateBase, async (req, res) => {
     req.body;
   const repo = AppDataSource.getRepository(DepositIntentSchema);
 
-  // Idempotency Check
   const existing = await repo.findOneBy({
     idempotencyKey: reference.idempotency_key,
   });
@@ -296,16 +291,22 @@ app.post(
     const { asset, network, amount, to_address, reference } = req.body;
     const repo = AppDataSource.getRepository(WithdrawalIntentSchema);
 
-    // Idempotency Check
     const existing = await repo.findOneBy({
       idempotencyKey: reference.idempotency_key,
     });
     if (existing) return res.status(201).json(existing);
 
-    // Initial Reservation Check (Soft check using adapter)
-    const balance = await walletAdapter.getBalance(asset, network);
-    if (new Decimal(balance.spendable).lessThan(new Decimal(amount))) {
-      return res.status(402).json({ code: "INSUFFICIENT_FUNDS" });
+    // [Soft Check] Check TOTAL balance for admission.
+    // Even if funds are locked (spendable < amount), we accept the request
+    // if the total balance is sufficient. The worker will handle the delay.
+    try {
+      const balance = await walletAdapter.getBalance(asset, network);
+      if (new Decimal(balance.total).lessThan(new Decimal(amount))) {
+        return res.status(402).json({ code: "INSUFFICIENT_FUNDS" });
+      }
+    } catch (err) {
+      console.error("Balance check failed:", err.message);
+      return res.status(503).json({ code: "WALLET_UNAVAILABLE" });
     }
 
     const intent = repo.create({
@@ -331,8 +332,12 @@ app.post(
 // GET /v1/wallet-balance
 app.get("/v1/wallet-balance", async (req, res) => {
   const { asset, network } = req.query;
-  const balance = await walletAdapter.getBalance(asset, network);
-  res.json({ asset, network, status: "OK", ...balance });
+  try {
+    const balance = await walletAdapter.getBalance(asset, network);
+    res.json({ asset, network, status: "OK", ...balance });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // --- Bootstrapping ---
@@ -350,16 +355,23 @@ const start = async () => {
 
     startWorkers();
 
-    // Schedule periodic batches (e.g., every 60 seconds for USDT/TRON)
+    const batchInterval = 60 * 1000; // 60s
+
+    // Batch for Bitcoin (Regtest)
     await batchQueue.add(
-      `batch-USDT-TRON`,
-      { asset: "USDT", network: "TRON" },
-      {
-        repeat: { every: 60 * 1000 },
-        jobId: `cron-USDT-TRON`,
-      },
+      `batch-BTC-regtest`,
+      { asset: "BTC", network: "regtest" },
+      { repeat: { every: batchInterval }, jobId: `cron-BTC-regtest` },
     );
-    console.log("Scheduler registered: USDT/TRON batching every 60s.");
+
+    // Batch for Monero (Testnet)
+    await batchQueue.add(
+      `batch-XMR-testnet`,
+      { asset: "XMR", network: "testnet" },
+      { repeat: { every: batchInterval }, jobId: `cron-XMR-testnet` },
+    );
+
+    console.log("Schedulers registered.");
 
     app.listen(3000, () =>
       console.log("Service running at http://localhost:3000"),

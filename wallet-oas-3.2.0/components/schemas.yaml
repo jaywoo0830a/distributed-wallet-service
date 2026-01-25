@@ -713,10 +713,17 @@ WalletBalanceOk:
           enum: [OK, LOW, STALE]
         total:
           $ref: '#/AmountString'
-          description: Total balance controlled by hot wallet (best-effort).
+          description: Total balance controlled by hot wallet (including unconfirmed/locked).
         spendable:
           $ref: '#/AmountString'
-          description: Spendable amount (after locks, minimum reserves, etc.).
+          description: Spendable amount (immediately available for transfers).
+        locked:
+          $ref: '#/AmountString'
+          description: Amount locked due to confirmations, protocols, etc.
+        lock_reason:
+          type: string
+          nullable: true
+          description: Reason for locked funds (e.g. "unconfirmed", "protocol_lock").
         reserved_for_fees:
           $ref: '#/AmountString'
           description: Operational fee reserve (optional/best-effort).
@@ -751,6 +758,10 @@ WalletBalanceUnavailable:
         total:
           type: "null"
         spendable:
+          type: "null"
+        locked:
+          type: "null"
+        lock_reason:
           type: "null"
         reserved_for_fees:
           type: "null"
