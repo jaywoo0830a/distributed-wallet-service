@@ -28,6 +28,7 @@ class MockWalletAdapter {
   }
 
   async getBalance(asset, network) {
+    // Mocking balance. In reality, this would fetch from chain/node.
     return { total: "50000.00", spendable: "45000.00" };
   }
 }
@@ -105,19 +106,35 @@ const startWorkers = () => {
     { connection: redisConnection },
   );
 
-  // Worker 2: Withdrawal Batch Processing
+  // Worker 2: Withdrawal Batch Processing (Modified for Dynamic Balance Check)
   new Worker(
     "withdrawal-batching",
     async (job) => {
       const { asset, network } = job.data;
+
+      // [Dynamic Check] Fetch real-time balance before processing
+      let spendableBalance;
+      try {
+        const balanceData = await walletAdapter.getBalance(asset, network);
+        spendableBalance = new Decimal(balanceData.spendable);
+      } catch (e) {
+        console.error(
+          `[Worker] Failed to fetch balance for ${asset}/${network}:`,
+          e.message,
+        );
+        return; // Skip this cycle if balance is unavailable
+      }
+
       const queryRunner = AppDataSource.createQueryRunner();
       await queryRunner.connect();
-      await queryRunner.startTransaction(); // Default isolation or SERIALIZABLE if strict safety needed
+      await queryRunner.startTransaction();
 
       try {
-        // Find PENDING intents and lock rows (Pessimistic Write)
+        // [FIFO] Fetch pending intents strictly ordered by creation time
+        // Locking ensures no other worker picks these up
         const pending = await queryRunner.manager.find(WithdrawalIntentSchema, {
           where: { status: "PENDING", asset, network },
+          order: { createdAt: "ASC" },
           lock: { mode: "pessimistic_write" },
         });
 
@@ -126,20 +143,51 @@ const startWorkers = () => {
           return;
         }
 
-        // Create Batch Record
+        // [Selection Logic] Select intents that fit within the spendable balance
+        const selectedIntents = [];
+        let currentBatchTotal = new Decimal(0);
+
+        for (const intent of pending) {
+          const intentAmount = new Decimal(intent.amount);
+
+          // Check if adding this intent exceeds the spendable balance
+          if (
+            currentBatchTotal
+              .plus(intentAmount)
+              .lessThanOrEqualTo(spendableBalance)
+          ) {
+            currentBatchTotal = currentBatchTotal.plus(intentAmount);
+            selectedIntents.push(intent);
+          } else {
+            // Stop selection to preserve FIFO order (avoid starvation of large txs)
+            console.log(
+              `[Worker] Insufficient balance for remaining intents. Stopping selection. (Need: ${intentAmount.toFixed()}, Available: ${spendableBalance.minus(currentBatchTotal).toFixed()})`,
+            );
+            break;
+          }
+        }
+
+        // If no intents could be selected (e.g., first intent is too large), rollback and wait
+        if (selectedIntents.length === 0) {
+          await queryRunner.rollbackTransaction();
+          return;
+        }
+
+        // Create Batch Record for the selected intents
         const batchRepo = queryRunner.manager.getRepository(
           WithdrawalBatchSchema,
         );
         const batch = batchRepo.create({ status: "CREATED", asset, network });
         const savedBatch = await batchRepo.save(batch);
 
-        // Lock intents to this batch
-        for (const item of pending) {
+        // Lock selected intents to this batch
+        for (const item of selectedIntents) {
           item.status = "LOCKED";
           item.batchId = savedBatch.id;
           await queryRunner.manager.save(WithdrawalIntentSchema, item);
         }
 
+        // Commit transaction (Others remain PENDING)
         await queryRunner.commitTransaction();
 
         // Execute Wallet Transfer (Broadcast)
@@ -149,8 +197,14 @@ const startWorkers = () => {
             { status: "SENDING" },
           );
 
+          console.log(
+            `[Worker] Sending batch ${savedBatch.id} with ${
+              selectedIntents.length
+            } items. Total: ${currentBatchTotal.toFixed()}`,
+          );
+
           const txid = await walletAdapter.sendBatch(
-            pending.map((p) => ({ to: p.toAddress, amount: p.amount })),
+            selectedIntents.map((p) => ({ to: p.toAddress, amount: p.amount })),
             asset,
             network,
           );
@@ -161,7 +215,7 @@ const startWorkers = () => {
             { status: "SENT", txid },
           );
           await AppDataSource.getRepository(WithdrawalIntentSchema).update(
-            pending.map((p) => p.id),
+            selectedIntents.map((p) => p.id),
             { status: "SENT", txid },
           );
           console.log(`[Worker] Batch ${savedBatch.id} sent via TX: ${txid}`);
@@ -265,9 +319,9 @@ app.post(
     });
     if (existing) return res.status(201).json(existing);
 
-    // Balance Check
+    // Initial Reservation Check (Soft check using adapter)
     const balance = await walletAdapter.getBalance(asset, network);
-    if (new Decimal(balance.spendable).lessThan(amount)) {
+    if (new Decimal(balance.spendable).lessThan(new Decimal(amount))) {
       return res.status(402).json({ code: "INSUFFICIENT_FUNDS" });
     }
 
