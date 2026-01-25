@@ -2,7 +2,6 @@ import express from "express";
 import { DataSource } from "typeorm";
 import { Queue, Worker } from "bullmq";
 import Redis from "ioredis";
-import { v4 as uuidv4 } from "uuid";
 import Decimal from "decimal.js";
 import { body, validationResult } from "express-validator";
 
@@ -13,26 +12,8 @@ import {
   WithdrawalBatchSchema,
 } from "./schemas.js";
 
-// --- 1. Wallet Adapter (Mock Implementation) ---
-class MockWalletAdapter {
-  async createAddress(asset, network) {
-    return `mock_addr_${network}_${uuidv4().substring(0, 8)}`;
-  }
-
-  async sendBatch(withdrawals, asset, network) {
-    console.log(
-      `[Adapter] Processing batch of ${withdrawals.length} items for ${asset}/${network}...`,
-    );
-    await new Promise((r) => setTimeout(r, 1000)); // Simulate latency
-    return `tx_${uuidv4()}`;
-  }
-
-  async getBalance(asset, network) {
-    // Mocking balance. In reality, this would fetch from chain/node.
-    return { total: "50000.00", spendable: "45000.00" };
-  }
-}
-const walletAdapter = new MockWalletAdapter();
+// Import wallet adapter factory from separate file
+import { walletAdapter } from "./adapters.js";
 
 // --- 2. Configuration & Connections ---
 const redisConfig = {
@@ -161,7 +142,9 @@ const startWorkers = () => {
           } else {
             // Stop selection to preserve FIFO order (avoid starvation of large txs)
             console.log(
-              `[Worker] Insufficient balance for remaining intents. Stopping selection. (Need: ${intentAmount.toFixed()}, Available: ${spendableBalance.minus(currentBatchTotal).toFixed()})`,
+              `[Worker] Insufficient balance for remaining intents. Stopping selection. (Need: ${intentAmount.toFixed()}, Available: ${spendableBalance
+                .minus(currentBatchTotal)
+                .toFixed()})`,
             );
             break;
           }
