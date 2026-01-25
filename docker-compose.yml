@@ -12,6 +12,9 @@ services:
       test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
       timeout: 5s
       retries: 10
+    # Add volume for MySQL data persistence
+    volumes:
+      - mysql_data:/var/lib/mysql
 
   redis:
     image: redis:latest
@@ -19,6 +22,9 @@ services:
     restart: always
     ports:
       - "6379:6379"
+    # Add volume for Redis data persistence
+    volumes:
+      - redis_data:/data
 
   api:
     build: .
@@ -54,3 +60,8 @@ services:
       - ./nginx.conf:/etc/nginx/nginx.conf:ro
     depends_on:
       - api
+
+# Define volumes at the top level
+volumes:
+  mysql_data:
+  redis_data:
