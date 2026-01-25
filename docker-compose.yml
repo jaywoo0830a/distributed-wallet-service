@@ -37,11 +37,10 @@ services:
       - DB_NAME=wallet_service
       - REDIS_HOST=redis
       - REDIS_PORT=6379
-    # Mount current directory to /app
-    # This uses the node_modules we created via init.sh
+    # Sync host files and node_modules to container for hot-reloading
     volumes:
       - .:/app
-    # Use nodemon for hot-reloading
+    # Use nodemon for development
     command: npm run dev
     ports:
       - "3000:3000"

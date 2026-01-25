@@ -1,7 +1,7 @@
 {
   "name": "distributed-wallet-service",
-  "version": "1.4.0",
-  "description": "Secure Wallet Service (Dev Setup)",
+  "version": "1.0.0",
+  "description": "Secure distributed wallet service implementing OAS 3.2.0",
   "type": "module",
   "main": "index.js",
   "scripts": {
@@ -9,15 +9,15 @@
     "dev": "nodemon index.js"
   },
   "dependencies": {
+    "bullmq": "^5.34.0",
+    "decimal.js": "^10.4.3",
+    "dotenv": "^16.4.7",
     "express": "^4.21.2",
+    "express-validator": "^7.2.1",
+    "ioredis": "^5.4.2",
     "mysql2": "^3.12.0",
     "typeorm": "^0.3.20",
-    "bullmq": "^5.34.0",
-    "ioredis": "^5.4.2",
-    "uuid": "^11.0.5",
-    "decimal.js": "^10.4.3",
-    "express-validator": "^7.2.1",
-    "dotenv": "^16.4.7"
+    "uuid": "^11.0.5"
   },
   "devDependencies": {
     "nodemon": "^3.1.9"

@@ -1,11 +1,14 @@
 import { EntitySchema } from "typeorm";
 
+/**
+ * DepositIntent: Tracks incoming funds lifecycle.
+ */
 export const DepositIntentSchema = new EntitySchema({
   name: "DepositIntent",
   tableName: "deposit_intents",
   columns: {
     id: { primary: true, type: "uuid", generated: "uuid" },
-    status: { type: "varchar", length: 30 },
+    status: { type: "varchar", length: 30 }, // CREATED, ADDRESS_PENDING, CAPTURED, etc.
     asset: { type: "varchar", length: 20 },
     network: { type: "varchar", length: 20 },
     expectedAmount: { type: "decimal", precision: 36, scale: 18 },
@@ -19,17 +22,20 @@ export const DepositIntentSchema = new EntitySchema({
     createdAt: { type: "timestamp", createDate: true },
   },
   indices: [
-    { name: "IDX_DEPOSIT_IDEMPOTENCY", columns: ["idempotencyKey"] },
+    { name: "IDX_DEPOSIT_KEY", columns: ["idempotencyKey"] },
     { name: "IDX_DEPOSIT_STATUS", columns: ["status"] },
   ],
 });
 
+/**
+ * WithdrawalIntent: Tracks fund reservation and request status.
+ */
 export const WithdrawalIntentSchema = new EntitySchema({
   name: "WithdrawalIntent",
   tableName: "withdrawal_intents",
   columns: {
     id: { primary: true, type: "uuid", generated: "uuid" },
-    status: { type: "varchar", length: 30 },
+    status: { type: "varchar", length: 30 }, // PENDING, LOCKED, SENT, FAILED
     asset: { type: "varchar", length: 20 },
     network: { type: "varchar", length: 20 },
     amount: { type: "decimal", precision: 36, scale: 18 },
@@ -40,17 +46,20 @@ export const WithdrawalIntentSchema = new EntitySchema({
     createdAt: { type: "timestamp", createDate: true },
   },
   indices: [
-    { name: "IDX_WITHDRAWAL_IDEMPOTENCY", columns: ["idempotencyKey"] },
+    { name: "IDX_WITHDRAWAL_KEY", columns: ["idempotencyKey"] },
     { name: "IDX_WITHDRAWAL_STATUS", columns: ["status"] },
   ],
 });
 
+/**
+ * WithdrawalBatch: Audit log for grouped blockchain transactions.
+ */
 export const WithdrawalBatchSchema = new EntitySchema({
   name: "WithdrawalBatch",
   tableName: "withdrawal_batches",
   columns: {
     id: { primary: true, type: "uuid", generated: "uuid" },
-    status: { type: "varchar", length: 30 },
+    status: { type: "varchar", length: 30 }, // CREATED, SENDING, SENT, FAILED
     asset: { type: "varchar", length: 20 },
     network: { type: "varchar", length: 20 },
     txid: { type: "varchar", length: 255, nullable: true },
