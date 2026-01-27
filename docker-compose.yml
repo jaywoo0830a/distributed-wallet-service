@@ -4,13 +4,15 @@ services:
     image: mysql:8.4
     container_name: wallet-db
     restart: always
+    env_file: .env
     environment:
-      MYSQL_ROOT_PASSWORD: root
-      MYSQL_DATABASE: wallet_service
+      MYSQL_ROOT_PASSWORD: ${DB_PASSWORD:-root}
+      MYSQL_DATABASE: ${DB_NAME:-wallet_service}
     ports:
       - "13306:3306"
     healthcheck:
       test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 5s
       timeout: 5s
       retries: 10
     volumes:
@@ -33,14 +35,20 @@ services:
   bitcoind:
     build: ./docker/bitcoin
     container_name: wallet-bitcoind
+    env_file: .env
     environment:
       BITCOIN_NETWORK: regtest
-      BITCOIN_RPC_USER: devuser
-      BITCOIN_RPC_PASSWORD: devpass
+      BITCOIN_RPC_USER: ${BTC_RPC_USER:-devuser}
+      BITCOIN_RPC_PASSWORD: ${BTC_RPC_PASS:-devpass}
     ports:
       - "18443:18443"
     volumes:
       - bitcoin_data:/home/bitcoin/.bitcoin
+    healthcheck:
+      test: ["CMD", "bitcoin-cli", "-rpcuser=${BTC_RPC_USER:-devuser}", "-rpcpassword=${BTC_RPC_PASS:-devpass}", "-regtest", "getblockchaininfo"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
     networks:
       - wallet-network
 
@@ -48,7 +56,15 @@ services:
   monerod:
     build: ./docker/monero/daemon
     container_name: wallet-monerod
-    command: ["/opt/monero/monerod", "--testnet", "--p2p-bind-ip=0.0.0.0", "--p2p-bind-port=28080", "--rpc-bind-ip=0.0.0.0", "--rpc-bind-port=28081", "--non-interactive", "--confirm-external-bind"]
+    command: 
+      --testnet 
+      --p2p-bind-ip=0.0.0.0 
+      --p2p-bind-port=28080 
+      --rpc-bind-ip=0.0.0.0 
+      --rpc-bind-port=28081 
+      --non-interactive 
+      --confirm-external-bind
+      --restricted-rpc
     ports:
       - "28080:28080"
       - "28081:28081"
@@ -62,16 +78,22 @@ services:
     container_name: wallet-monero-rpc
     depends_on:
       - monerod
+    env_file: .env
     environment:
       MONERO_NETWORK: testnet
       MONEROD_HOST: monerod
       MONEROD_RPC_PORT: 28081
       WALLET_RPC_PORT: 28083
-      MONERO_WALLET_PASSWORD: devpass
+      MONERO_WALLET_PASSWORD: ${XMR_RPC_PASS:-devpass}
     ports:
       - "28083:28083"
     volumes:
       - monero_wallet_data:/wallet
+    healthcheck:
+      test: ["CMD", "nc", "-z", "localhost", "28083"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
     networks:
       - wallet-network
 
@@ -85,27 +107,15 @@ services:
       redis:
         condition: service_started
       bitcoind:
-        condition: service_started
+        condition: service_healthy
       monero-wallet:
-        condition: service_started
+        condition: service_healthy
+    env_file: .env
     environment:
       - NODE_ENV=development
-      - DB_HOST=mysql
-      - DB_PORT=3306
-      - DB_USER=root
-      - DB_PASSWORD=root
-      - DB_NAME=wallet_service
-      - REDIS_HOST=redis
-      - REDIS_PORT=6379
-      - BTC_RPC_URL=http://bitcoind:18443
-      - BTC_RPC_USER=devuser
-      - BTC_RPC_PASS=devpass
-      - XMR_RPC_URL=http://monero-wallet:28083/json_rpc
-      - XMR_RPC_USER=monero
-      - XMR_RPC_PASS=devpass
     volumes:
       - .:/app
-      - /app/node_modules # Important: Protect container node_modules from host shadowing
+      - /app/node_modules
     command: npm run dev
     ports:
       - "3000:3000"
@@ -126,6 +136,7 @@ services:
 
 networks:
   wallet-network:
+    name: wallet-network
     driver: bridge
 
 volumes:

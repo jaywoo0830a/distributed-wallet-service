@@ -2,29 +2,20 @@ import axios from "axios";
 import Decimal from "decimal.js";
 import { v4 as uuidv4 } from "uuid";
 
-// --- Wallet Adapter Interface & Implementations ---
-
-/**
- * Interface for Wallet Adapters
- *
- * createAddress(asset, network): Promise<string>
- * sendBatch(withdrawals, asset, network): Promise<string> (returns txid)
- * getBalance(asset, network): Promise<{ total: string, spendable: string, locked: string, lock_reason: string }>
- */
-
 /**
  * Bitcoin Wallet Adapter
- * Ref: https://developer.bitcoin.org/reference/rpc/
  */
 export class BitcoinWalletAdapter {
   constructor(config) {
-    this.rpcUrl = config.rpcUrl; // e.g., http://127.0.0.1:8332
+    this.rpcUrl = config.rpcUrl;
     this.rpcUser = config.rpcUser;
     this.rpcPass = config.rpcPass;
   }
 
   async _callRpc(method, params = []) {
     try {
+      console.log(`[BTC-RPC] Attempting ${method} at ${this.rpcUrl}`);
+      
       const response = await axios.post(
         this.rpcUrl,
         {
@@ -38,7 +29,8 @@ export class BitcoinWalletAdapter {
             username: this.rpcUser,
             password: this.rpcPass,
           },
-          headers: { Connection: "keep-alive" },
+          headers: { "Content-Type": "application/json" },
+          timeout: 10000,
         },
       );
 
@@ -65,7 +57,6 @@ export class BitcoinWalletAdapter {
   }
 
   async sendBatch(withdrawals, asset, network) {
-    // sendmany
     const outputs = {};
     for (const w of withdrawals) {
       const amount = new Decimal(w.amount);
@@ -75,24 +66,18 @@ export class BitcoinWalletAdapter {
         outputs[w.to] = amount.toNumber();
       }
     }
-    // minconf=6 for safety
+    // sendmany "" {address:amount,...} [minconf=1 for regtest]
     return await this._callRpc("sendmany", [
       "",
       outputs,
-      6,
+      1,
       "batch withdrawal",
     ]);
   }
 
   async getBalance(asset, network) {
-    // getbalance "*" [minconf]
-    // Bitcoin treats minconf=0 as total (including mempool)
-    // We treat minconf=1 as spendable (confirmed)
-
-    // Note: 'getbalance' with minconf=0 might include unconfirmed change from our own txs,
-    // which is spendable in Bitcoin, but 'unconfirmed' from others is not safely spendable.
-    // For safety in this service, we stick to confirmed=spendable.
-
+    // getbalance "*" 0 -> Total (including unconfirmed)
+    // getbalance "*" 1 -> Spendable (confirmed)
     const unconfirmedTotal = await this._callRpc("getbalance", ["*", 0]);
     const confirmedTotal = await this._callRpc("getbalance", ["*", 1]);
 
@@ -111,17 +96,18 @@ export class BitcoinWalletAdapter {
 
 /**
  * Monero Wallet Adapter
- * Ref: https://docs.getmonero.org/rpc-library/wallet-rpc/
  */
 export class MoneroWalletAdapter {
   constructor(config) {
-    this.rpcUrl = config.rpcUrl; // e.g., http://127.0.0.1:18081/json_rpc
+    this.rpcUrl = config.rpcUrl;
     this.rpcUser = config.rpcUser;
     this.rpcPass = config.rpcPass;
   }
 
   async _callRpc(method, params = {}) {
     try {
+      console.log(`[XMR-RPC] Attempting ${method} at ${this.rpcUrl}`);
+      
       const payload = {
         jsonrpc: "2.0",
         id: "wallet-service",
@@ -129,7 +115,11 @@ export class MoneroWalletAdapter {
         params,
       };
 
-      const options = {};
+      const options = {
+        headers: { "Content-Type": "application/json" },
+        timeout: 20000
+      };
+      
       if (this.rpcUser) {
         options.auth = {
           username: this.rpcUser,
@@ -161,8 +151,9 @@ export class MoneroWalletAdapter {
   }
 
   async sendBatch(withdrawals, asset, network) {
+    // Monero uses atomic units (1 XMR = 10^12 piconero)
     const destinations = withdrawals.map((w) => ({
-      amount: new Decimal(w.amount).times(1e12).toNumber(),
+      amount: new Decimal(w.amount).times(1e12).toDecimalPlaces(0).toNumber(),
       address: w.to,
     }));
 
@@ -181,10 +172,8 @@ export class MoneroWalletAdapter {
   }
 
   async getBalance(asset, network) {
-    // get_balance
     const result = await this._callRpc("get_balance", { account_index: 0 });
 
-    // Convert from atomic units
     const total = new Decimal(result.balance).div(1e12);
     const spendable = new Decimal(result.unlocked_balance).div(1e12);
     const locked = total.minus(spendable);
@@ -193,7 +182,7 @@ export class MoneroWalletAdapter {
       total: total.toFixed(12),
       spendable: spendable.toFixed(12),
       locked: locked.toFixed(12),
-      lock_reason: locked.gt(0) ? "protocol_lock" : null, // Monero locks funds for ~20 mins (10 blocks)
+      lock_reason: locked.gt(0) ? "protocol_lock" : null,
     };
   }
 }
@@ -207,25 +196,21 @@ export class MockWalletAdapter {
   }
 
   async sendBatch(withdrawals, asset, network) {
-    console.log(
-      `[Adapter] Processing batch of ${withdrawals.length} items for ${asset}/${network}...`,
-    );
-    await new Promise((r) => setTimeout(r, 1000));
-    return `tx_${uuidv4()}`;
+    console.log(`[MockAdapter] Sending mock batch`);
+    return `tx_mock_${uuidv4()}`;
   }
 
   async getBalance(asset, network) {
-    // Simulate a scenario where some funds are locked
     return {
-      total: "50000.00",
-      spendable: "45000.00",
-      locked: "5000.00",
-      lock_reason: "simulated_lock",
+      total: "100.00",
+      spendable: "90.00",
+      locked: "10.00",
+      lock_reason: "mock_locking",
     };
   }
 }
 
-// Factory to choose adapter based on ENV or Asset
+// Factory resolver
 const getAdapterInstance = (asset) => {
   if (asset === "BTC" && process.env.BTC_RPC_URL) {
     return new BitcoinWalletAdapter({
@@ -244,11 +229,8 @@ const getAdapterInstance = (asset) => {
   return new MockWalletAdapter();
 };
 
-// Export a proxy object that delegates to the correct adapter per call
 export const walletAdapter = {
-  createAddress: (asset, net) =>
-    getAdapterInstance(asset).createAddress(asset, net),
-  sendBatch: (withdrawals, asset, net) =>
-    getAdapterInstance(asset).sendBatch(withdrawals, asset, net),
+  createAddress: (asset, net) => getAdapterInstance(asset).createAddress(asset, net),
+  sendBatch: (withdrawals, asset, net) => getAdapterInstance(asset).sendBatch(withdrawals, asset, net),
   getBalance: (asset, net) => getAdapterInstance(asset).getBalance(asset, net),
 };
