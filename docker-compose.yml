@@ -106,17 +106,17 @@ services:
         condition: service_healthy
       redis:
         condition: service_started
+      # Fix for Mock Mode: 
+      # Change 'service_healthy' to 'service_started' so the API can start 
+      # even if the heavy blockchain nodes are still initializing or failed.
       bitcoind:
-        # In mock mode, bitcoind and monero-wallet might not be healthy, 
-        # but depends_on with conditions can block the API start.
-        # We keep it as is, but users can comment these out in .env for pure mock mode.
-        condition: service_healthy
+        condition: service_started
       monero-wallet:
-        condition: service_healthy
+        condition: service_started
     env_file: .env
     environment:
       - NODE_ENV=development
-      - WALLET_MODE=${WALLET_MODE:-live} # Default to live
+      - WALLET_MODE=${WALLET_MODE:-live}
     volumes:
       - .:/app
       - /app/node_modules
