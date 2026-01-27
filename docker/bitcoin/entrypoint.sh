@@ -1,56 +1,58 @@
 #!/bin/bash
 set -e
 
-# Configuration based on environment variables
+# Config from env
 BITCOIN_NETWORK=${BITCOIN_NETWORK:-regtest}
 RPC_USER=${BITCOIN_RPC_USER:-devuser}
 RPC_PASS=${BITCOIN_RPC_PASSWORD:-devpass}
 BITCOIN_DIR="/home/bitcoin/.bitcoin"
 
-# Ensure data directory exists and has correct permissions
+# Ensure directory exists
 mkdir -p "$BITCOIN_DIR"
 
-# Generate bitcoin.conf if not already present
+# Initialize config if missing
+# NOTE: v28.0+ requires network-specific settings inside their own sections
 if [ ! -f "$BITCOIN_DIR/bitcoin.conf" ]; then
-    echo "Initializing bitcoin.conf for ${BITCOIN_NETWORK}"
+    echo "Creating bitcoin.conf for $BITCOIN_NETWORK"
     cat <<EOF > "$BITCOIN_DIR/bitcoin.conf"
-chain=${BITCOIN_NETWORK}
+# Global
 server=1
+txindex=1
+printtoconsole=1
+
+# Network Specific Section
+[${BITCOIN_NETWORK}]
 rpcuser=${RPC_USER}
 rpcpassword=${RPC_PASS}
 rpcbind=0.0.0.0
 rpcallowip=0.0.0.0/0
-deprecatedrpc=create_bdb
-
-[regtest]
 fallbackfee=0.00001
-txindex=1
 EOF
 fi
 
-# Set ownership to ensure gosu can drop privileges safely
+# Fix volume permissions
 chown -R bitcoin:bitcoin "$BITCOIN_DIR"
 
-# Setup logic for Regtest (automatic wallet creation and mining)
+# Regtest automation (mining first blocks)
 setup_regtest() {
-    echo "Waiting for bitcoind to respond..."
+    echo "Waiting for bitcoind RPC server..."
     until bitcoin-cli -rpcuser=${RPC_USER} -rpcpassword=${RPC_PASS} -regtest getblockchaininfo > /dev/null 2>&1; do
         sleep 2
     done
     
-    echo "Creating default wallet..."
+    echo "Bitcoind ready. Initializing regtest wallet..."
     bitcoin-cli -rpcuser=${RPC_USER} -rpcpassword=${RPC_PASS} -regtest createwallet "default" || true
     
-    echo "Mining 101 blocks to mature coinbase..."
+    # Mine 101 blocks to make coins spendable
+    echo "Mining 101 blocks to mature coinbase rewards..."
     address=$(bitcoin-cli -rpcuser=${RPC_USER} -rpcpassword=${RPC_PASS} -regtest getnewaddress)
     bitcoin-cli -rpcuser=${RPC_USER} -rpcpassword=${RPC_PASS} -regtest generatetoaddress 101 "$address"
     echo "Regtest setup complete."
 }
 
-# Run background setup if in regtest mode
 if [ "$1" = "bitcoind" ] && [ "$BITCOIN_NETWORK" = "regtest" ]; then
     setup_regtest &
 fi
 
-# Use gosu to run the daemon as a non-privileged user
+# Run as bitcoin user using gosu
 exec gosu bitcoin "$@"

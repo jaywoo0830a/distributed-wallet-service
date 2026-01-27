@@ -25,7 +25,7 @@ services:
     container_name: wallet-redis
     restart: always
     ports:
-      - "6379:6379"
+      - "16379:6379"
     volumes:
       - redis_data:/data
     networks:
@@ -56,21 +56,11 @@ services:
   monerod:
     build: ./docker/monero/daemon
     container_name: wallet-monerod
-    # Core Monero node settings
-    command: 
-      --testnet 
-      --p2p-bind-ip=0.0.0.0 
-      --p2p-bind-port=28080 
-      --rpc-bind-ip=0.0.0.0 
-      --rpc-bind-port=28081 
-      --non-interactive 
-      --confirm-external-bind
-      --restricted-rpc
     ports:
       - "28080:28080"
       - "28081:28081"
     volumes:
-      - monero_data:/home/monero/.bitmonero
+      - monero_data:/data
     networks:
       - wallet-network
 
