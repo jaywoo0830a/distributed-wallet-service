@@ -12,8 +12,8 @@ services:
       - "13306:3306"
     healthcheck:
       test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
-      interval: 10s
-      timeout: 5s
+      interval: 3s
+      timeout: 2s
       retries: 10
     volumes:
       - mysql_data:/var/lib/mysql
@@ -46,9 +46,9 @@ services:
       - bitcoin_data:/home/bitcoin/.bitcoin
     healthcheck:
       test: ["CMD", "bitcoin-cli", "-rpcuser=${BTC_RPC_USER:-devuser}", "-rpcpassword=${BTC_RPC_PASS:-devpass}", "-regtest", "getblockchaininfo"]
-      interval: 15s
-      timeout: 5s
-      retries: 10
+      interval: 3s
+      timeout: 2s
+      retries: 20
     networks:
       - wallet-network
 
@@ -56,6 +56,15 @@ services:
   monerod:
     build: ./docker/monero/daemon
     container_name: wallet-monerod
+    command: 
+      --testnet 
+      --p2p-bind-ip=0.0.0.0 
+      --p2p-bind-port=28080 
+      --rpc-bind-ip=0.0.0.0 
+      --rpc-bind-port=28081 
+      --non-interactive 
+      --confirm-external-bind
+      --restricted-rpc
     ports:
       - "28080:28080"
       - "28081:28081"
@@ -82,9 +91,9 @@ services:
       - monero_wallet_data:/wallet
     healthcheck:
       test: ["CMD", "nc", "-z", "localhost", "28083"]
-      interval: 10s
-      timeout: 5s
-      retries: 20
+      interval: 3s
+      timeout: 2s
+      retries: 30
     networks:
       - wallet-network
 
@@ -98,12 +107,16 @@ services:
       redis:
         condition: service_started
       bitcoind:
+        # In mock mode, bitcoind and monero-wallet might not be healthy, 
+        # but depends_on with conditions can block the API start.
+        # We keep it as is, but users can comment these out in .env for pure mock mode.
         condition: service_healthy
       monero-wallet:
         condition: service_healthy
     env_file: .env
     environment:
       - NODE_ENV=development
+      - WALLET_MODE=${WALLET_MODE:-live} # Default to live
     volumes:
       - .:/app
       - /app/node_modules
