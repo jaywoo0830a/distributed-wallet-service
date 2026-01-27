@@ -4,6 +4,7 @@ import { v4 as uuidv4 } from "uuid";
 
 /**
  * Bitcoin Wallet Adapter
+ * Interacts with Bitcoin Core RPC (Regtest)
  */
 export class BitcoinWalletAdapter {
   constructor(config) {
@@ -12,9 +13,12 @@ export class BitcoinWalletAdapter {
     this.rpcPass = config.rpcPass;
   }
 
+  /**
+   * Internal helper for Bitcoin RPC calls
+   */
   async _callRpc(method, params = []) {
     try {
-      console.log(`[BTC-RPC] Attempting ${method} at ${this.rpcUrl}`);
+      console.log(`[BTC-RPC] Method: ${method} Target: ${this.rpcUrl}`);
       
       const response = await axios.post(
         this.rpcUrl,
@@ -47,8 +51,10 @@ export class BitcoinWalletAdapter {
     }
   }
 
+  /**
+   * Provisions a new Bech32 (SegWit) address
+   */
   async createAddress(asset, network) {
-    // getnewaddress [label] [address_type]
     const address = await this._callRpc("getnewaddress", [
       "wallet-service-deposit",
       "bech32",
@@ -56,17 +62,22 @@ export class BitcoinWalletAdapter {
     return address;
   }
 
+  /**
+   * Executes a batch of withdrawals using sendmany
+   */
   async sendBatch(withdrawals, asset, network) {
     const outputs = {};
     for (const w of withdrawals) {
       const amount = new Decimal(w.amount);
       if (outputs[w.to]) {
+        // Accumulate amounts for the same destination address
         outputs[w.to] = new Decimal(outputs[w.to]).plus(amount).toNumber();
       } else {
         outputs[w.to] = amount.toNumber();
       }
     }
-    // sendmany "" {address:amount,...} [minconf=1 for regtest]
+    
+    // minconf set to 1 for testing purposes in Regtest
     return await this._callRpc("sendmany", [
       "",
       outputs,
@@ -75,9 +86,12 @@ export class BitcoinWalletAdapter {
     ]);
   }
 
+  /**
+   * Fetches total and spendable (confirmed) balances
+   */
   async getBalance(asset, network) {
-    // getbalance "*" 0 -> Total (including unconfirmed)
-    // getbalance "*" 1 -> Spendable (confirmed)
+    // "*" includes all labels. 
+    // 0 minconf for total, 1 minconf for spendable.
     const unconfirmedTotal = await this._callRpc("getbalance", ["*", 0]);
     const confirmedTotal = await this._callRpc("getbalance", ["*", 1]);
 
@@ -96,6 +110,7 @@ export class BitcoinWalletAdapter {
 
 /**
  * Monero Wallet Adapter
+ * Interacts with Monero Wallet RPC (Testnet)
  */
 export class MoneroWalletAdapter {
   constructor(config) {
@@ -104,9 +119,12 @@ export class MoneroWalletAdapter {
     this.rpcPass = config.rpcPass;
   }
 
+  /**
+   * Internal helper for Monero JSON-RPC calls
+   */
   async _callRpc(method, params = {}) {
     try {
-      console.log(`[XMR-RPC] Attempting ${method} at ${this.rpcUrl}`);
+      console.log(`[XMR-RPC] Method: ${method} Target: ${this.rpcUrl}`);
       
       const payload = {
         jsonrpc: "2.0",
@@ -117,7 +135,7 @@ export class MoneroWalletAdapter {
 
       const options = {
         headers: { "Content-Type": "application/json" },
-        timeout: 20000
+        timeout: 20000 // Monero can take longer for cryptographic operations
       };
       
       if (this.rpcUser) {
@@ -142,6 +160,9 @@ export class MoneroWalletAdapter {
     }
   }
 
+  /**
+   * Creates a new subaddress for deposits
+   */
   async createAddress(asset, network) {
     const result = await this._callRpc("create_address", {
       account_index: 0,
@@ -150,8 +171,11 @@ export class MoneroWalletAdapter {
     return result.address;
   }
 
+  /**
+   * Executes multiple withdrawals using transfer_split
+   */
   async sendBatch(withdrawals, asset, network) {
-    // Monero uses atomic units (1 XMR = 10^12 piconero)
+    // 1 XMR = 10^12 piconero (atomic units)
     const destinations = withdrawals.map((w) => ({
       amount: new Decimal(w.amount).times(1e12).toDecimalPlaces(0).toNumber(),
       address: w.to,
@@ -160,7 +184,7 @@ export class MoneroWalletAdapter {
     const result = await this._callRpc("transfer_split", {
       destinations,
       account_index: 0,
-      priority: 2,
+      priority: 2, // Default priority
       ring_size: 16,
       get_tx_keys: true,
     });
@@ -171,9 +195,13 @@ export class MoneroWalletAdapter {
     return result.tx_hash || "unknown_tx_hash";
   }
 
+  /**
+   * Fetches total and unlocked (spendable) balance from wallet
+   */
   async getBalance(asset, network) {
     const result = await this._callRpc("get_balance", { account_index: 0 });
 
+    // Convert from atomic units back to decimal XMR
     const total = new Decimal(result.balance).div(1e12);
     const spendable = new Decimal(result.unlocked_balance).div(1e12);
     const locked = total.minus(spendable);
@@ -188,7 +216,7 @@ export class MoneroWalletAdapter {
 }
 
 /**
- * Mock Adapter for Testing/Development
+ * Mock Adapter for Development/CI
  */
 export class MockWalletAdapter {
   async createAddress(asset, network) {
@@ -196,21 +224,23 @@ export class MockWalletAdapter {
   }
 
   async sendBatch(withdrawals, asset, network) {
-    console.log(`[MockAdapter] Sending mock batch`);
+    console.log(`[MockAdapter] Executing mock send for ${withdrawals.length} destinations`);
     return `tx_mock_${uuidv4()}`;
   }
 
   async getBalance(asset, network) {
     return {
-      total: "100.00",
-      spendable: "90.00",
-      locked: "10.00",
-      lock_reason: "mock_locking",
+      total: "500.00",
+      spendable: "450.00",
+      locked: "50.00",
+      lock_reason: "simulated_locking",
     };
   }
 }
 
-// Factory resolver
+/**
+ * Factory to determine which adapter to use per request
+ */
 const getAdapterInstance = (asset) => {
   if (asset === "BTC" && process.env.BTC_RPC_URL) {
     return new BitcoinWalletAdapter({
