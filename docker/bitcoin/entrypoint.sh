@@ -1,4 +1,5 @@
 #!/bin/bash
+# docker/bitcoin/entrypoint.sh
 set -e
 
 # Config from env
@@ -17,8 +18,17 @@ if [ ! -f "$BITCOIN_DIR/bitcoin.conf" ]; then
     cat <<EOF > "$BITCOIN_DIR/bitcoin.conf"
 # Global
 server=1
-txindex=1
 printtoconsole=1
+
+# Storage Optimization (Pruning)
+# Set the block storage limit in MiB. 550 is the minimum.
+# 1000 MiB equals ~1GB.
+prune=1000
+
+# Transaction Indexing
+# Disabling txindex saves significant space. 
+# The wallet will still function for its own addresses.
+txindex=0
 
 # Network Specific Section
 [${BITCOIN_NETWORK}]

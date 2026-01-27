@@ -65,6 +65,7 @@ services:
       --non-interactive 
       --confirm-external-bind
       --restricted-rpc
+      --prune-blockchain
     ports:
       - "28080:28080"
       - "28081:28081"
