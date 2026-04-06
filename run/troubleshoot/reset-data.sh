@@ -9,5 +9,5 @@ if [[ ! $REPLY =~ ^[Yy]$ ]]; then
     exit 1
 fi
 
-docker-compose down -v
+docker compose down -v
 echo "✅ Data reset complete."
