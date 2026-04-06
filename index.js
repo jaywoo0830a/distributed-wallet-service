@@ -14,6 +14,7 @@ import {
 
 // Import wallet adapter factory from separate file
 import { walletAdapter } from "./adapters.js";
+import { createRatesClient } from "./rates.js";
 
 // --- 2. Configuration & Connections ---
 const redisConfig = {
@@ -27,6 +28,7 @@ let AppDataSource;
 let redisConnection;
 let provisionQueue;
 let batchQueue;
+let ratesClient;
 
 // Retry logic for robust DB connection
 const connectDB = async (retries = 15) => {
@@ -335,7 +337,19 @@ app.get("/v1/wallet-balance", async (req, res) => {
   const { asset, network } = req.query;
   try {
     const balance = await walletAdapter.getBalance(asset, network);
-    res.json({ asset, network, status: "OK", ...balance });
+    const usdPrice = await ratesClient.getUsdPrice(asset);
+    const usdValue =
+      usdPrice !== null
+        ? new Decimal(balance.total).times(usdPrice).toFixed(2)
+        : null;
+    res.json({
+      asset,
+      network,
+      status: "OK",
+      ...balance,
+      usd_price: usdPrice,
+      usd_value: usdValue,
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -347,6 +361,10 @@ const start = async () => {
     AppDataSource = await connectDB();
 
     redisConnection = new Redis(redisConfig);
+    ratesClient = createRatesClient({
+      redis: redisConnection,
+      ttlSeconds: parseInt(process.env.RATE_CACHE_TTL_SECONDS || "30"),
+    });
     provisionQueue = new Queue("provision-address", {
       connection: redisConnection,
     });

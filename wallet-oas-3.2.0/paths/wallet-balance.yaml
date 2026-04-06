@@ -14,6 +14,10 @@ get:
     - This is service-level balance (not user balance).
     - Errors are returned as a typed resource state (UNAVAILABLE/FAILED), not transport errors.
     - The response may be slightly stale; see observed_at and staleness_ms.
+    - `usd_price` / `usd_value` are best-effort spot figures from an upstream
+      market-data provider, cached briefly in Redis. They are intended for
+      display and monitoring, not for settlement, and may be `null` when the
+      provider is unreachable (the balance fields remain valid).
   security:
     - bearerAuth: []
   parameters:
