@@ -1,0 +1,15 @@
+# Production overrides.
+# Only nginx is exposed to the host. All other services communicate over the
+# internal wallet-network bridge. No source volume mount, no nodemon.
+services:
+  api:
+    environment:
+      - NODE_ENV=production
+      - WALLET_MODE=${WALLET_MODE:?WALLET_MODE is required in production}
+    command: node index.js
+    restart: always
+
+  nginx:
+    restart: always
+    # If/when TLS certs are provisioned, mount them and add a 443 listener in
+    # nginx.conf. Until then, terminate TLS at an upstream load balancer.

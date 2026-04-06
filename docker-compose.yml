@@ -6,10 +6,8 @@ services:
     restart: always
     env_file: .env
     environment:
-      MYSQL_ROOT_PASSWORD: ${DB_PASSWORD:-root}
-      MYSQL_DATABASE: ${DB_NAME:-wallet_service}
-    ports:
-      - "13306:3306"
+      MYSQL_ROOT_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD is required}
+      MYSQL_DATABASE: ${DB_NAME:?DB_NAME is required}
     healthcheck:
       test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
       interval: 3s
@@ -24,8 +22,9 @@ services:
     image: redis:latest
     container_name: wallet-redis
     restart: always
-    ports:
-      - "16379:6379"
+    command: >
+      redis-server
+      --requirepass ${REDIS_PASSWORD:?REDIS_PASSWORD is required}
     volumes:
       - redis_data:/data
     networks:
@@ -38,14 +37,14 @@ services:
     env_file: .env
     environment:
       BITCOIN_NETWORK: regtest
-      BITCOIN_RPC_USER: ${BTC_RPC_USER:-devuser}
-      BITCOIN_RPC_PASSWORD: ${BTC_RPC_PASS:-devpass}
-    ports:
-      - "18443:18443"
+      BITCOIN_RPC_USER: ${BTC_RPC_USER:?BTC_RPC_USER is required}
+      BITCOIN_RPC_PASSWORD: ${BTC_RPC_PASS:?BTC_RPC_PASS is required}
     volumes:
       - bitcoin_data:/home/bitcoin/.bitcoin
     healthcheck:
-      test: ["CMD", "bitcoin-cli", "-rpcuser=${BTC_RPC_USER:-devuser}", "-rpcpassword=${BTC_RPC_PASS:-devpass}", "-regtest", "getblockchaininfo"]
+      # Credentials are read from the container's bitcoin.conf via BITCOIN_* env,
+      # not passed on the command line, to avoid leaking via `docker inspect`.
+      test: ["CMD-SHELL", "bitcoin-cli -regtest -rpcuser=$$BITCOIN_RPC_USER -rpcpassword=$$BITCOIN_RPC_PASSWORD getblockchaininfo >/dev/null"]
       interval: 3s
       timeout: 2s
       retries: 20
@@ -56,19 +55,16 @@ services:
   monerod:
     build: ./docker/monero/daemon
     container_name: wallet-monerod
-    command: 
-      --testnet 
-      --p2p-bind-ip=0.0.0.0 
-      --p2p-bind-port=28080 
-      --rpc-bind-ip=0.0.0.0 
-      --rpc-bind-port=28081 
-      --non-interactive 
+    command:
+      --testnet
+      --p2p-bind-ip=0.0.0.0
+      --p2p-bind-port=28080
+      --rpc-bind-ip=0.0.0.0
+      --rpc-bind-port=28081
+      --non-interactive
       --confirm-external-bind
       --restricted-rpc
       --prune-blockchain
-    ports:
-      - "28080:28080"
-      - "28081:28081"
     volumes:
       - monero_data:/data
     networks:
@@ -85,9 +81,7 @@ services:
       MONEROD_HOST: monerod
       MONEROD_RPC_PORT: 28081
       WALLET_RPC_PORT: 28083
-      MONERO_WALLET_PASSWORD: ${XMR_RPC_PASS:-devpass}
-    ports:
-      - "28083:28083"
+      MONERO_WALLET_PASSWORD: ${XMR_RPC_PASS:?XMR_RPC_PASS is required}
     volumes:
       - monero_wallet_data:/wallet
     healthcheck:
@@ -99,6 +93,8 @@ services:
       - wallet-network
 
   # --- API Service ---
+  # Base definition is production-like: no host port exposure, no source mount,
+  # no dev command. Dev override adds those back on loopback only.
   api:
     build: .
     container_name: wallet-api
@@ -107,23 +103,11 @@ services:
         condition: service_healthy
       redis:
         condition: service_started
-      # Fix for Mock Mode: 
-      # Change 'service_healthy' to 'service_started' so the API can start 
-      # even if the heavy blockchain nodes are still initializing or failed.
       bitcoind:
         condition: service_started
       monero-wallet:
         condition: service_started
     env_file: .env
-    environment:
-      - NODE_ENV=development
-      - WALLET_MODE=${WALLET_MODE:-live}
-    volumes:
-      - .:/app
-      - /app/node_modules
-    command: npm run dev
-    ports:
-      - "3000:3000"
     networks:
       - wallet-network
 
