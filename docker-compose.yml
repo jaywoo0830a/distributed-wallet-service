@@ -115,7 +115,9 @@ services:
     image: nginx:latest
     container_name: wallet-nginx
     ports:
-      - "80:80"
+      # HTTP_PORT lets you co-host multiple sites on one server by mapping
+      # nginx to a non-default host port (e.g. 8080, 8081, ...).
+      - "${HTTP_PORT:?HTTP_PORT is required}:80"
     volumes:
       - ./nginx.conf:/etc/nginx/nginx.conf:ro
     depends_on:
